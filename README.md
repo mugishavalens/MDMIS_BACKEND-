@@ -40,3 +40,4 @@ All use password `demo1234`:
 - `analyst@mdmis.rw` — mine_manager
 - `geo@mdmis.rw` — geologist
 - `compliance@mdmis.rw` — compliance_manager
+# mdmis-backend
