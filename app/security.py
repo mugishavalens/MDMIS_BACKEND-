@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -32,3 +33,19 @@ def create_refresh_token(user_id: str) -> str:
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+
+
+def generate_otp() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_otp(code: str) -> str:
+    return bcrypt.hashpw(code.encode("utf-8"), bcrypt.gensalt(rounds=10)).decode("utf-8")
+
+
+def verify_otp(code: str, code_hash: str) -> bool:
+    return bcrypt.checkpw(code.encode("utf-8"), code_hash.encode("utf-8"))
+
+
+def generate_invite_token() -> str:
+    return secrets.token_urlsafe(32)

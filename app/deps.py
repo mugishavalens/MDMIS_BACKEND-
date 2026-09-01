@@ -51,3 +51,13 @@ def require_role(*roles: str):
         return current_user
 
     return checker
+
+
+async def require_org_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Gate for organisation-management endpoints (inviting/removing
+    teammates): only that org's own admin, or a system_admin, may act."""
+    if current_user.role not in ("org_admin", "system_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an organisation admin can do this.")
+    if current_user.organisation_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Your account has no organisation.")
+    return current_user

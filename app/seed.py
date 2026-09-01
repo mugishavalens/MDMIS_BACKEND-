@@ -11,13 +11,18 @@ from app.database import AsyncSessionLocal
 from app.security import hash_password
 from app.sites.models import Site
 
-DEMO_USERS = [
-    ("admin@mdmis.rw", "A. Nkurunziza", "system_admin"),
-    ("analyst@mdmis.rw", "D. Nzeyimana", "mine_manager"),
-    ("geo@mdmis.rw", "J. Habimana", "geologist"),
-    ("compliance@mdmis.rw", "C. Mukamana", "compliance_manager"),
-]
 DEMO_PASSWORD = "demo1234"
+
+# (email, full_name, role, password) — password defaults to DEMO_PASSWORD
+# when omitted. system_admin is the only real (non-quick-demo) credential
+# exposed on the login page, so it gets its own password.
+DEMO_USERS = [
+    ("vivamugisha@gmail.com", "Mugisha", "system_admin", "MDMIS@2026"),
+    ("owner@mdmis.rw", "E. Uwase", "org_admin", None),
+    ("analyst@mdmis.rw", "D. Nzeyimana", "mine_manager", None),
+    ("geo@mdmis.rw", "J. Habimana", "geologist", None),
+    ("compliance@mdmis.rw", "C. Mukamana", "compliance_manager", None),
+]
 
 # Mirrors frontend/lib/mdmis-data.ts SITES so the map explorer's static
 # terrain assets (frontend/public/terrain/<id>/) line up with real DB rows.
@@ -82,7 +87,7 @@ async def seed():
         else:
             print(f"Using organisation: {org.name}")
 
-        for email, full_name, role in DEMO_USERS:
+        for email, full_name, role, password in DEMO_USERS:
             existing = await db.scalar(select(User).where(User.email == email))
             if existing:
                 print(f"User already exists: {email}")
@@ -92,7 +97,7 @@ async def seed():
                 email=email,
                 full_name=full_name,
                 role=role,
-                password_hash=hash_password(DEMO_PASSWORD),
+                password_hash=hash_password(password or DEMO_PASSWORD),
                 is_active=True,
                 is_staff=(role == "system_admin"),
             )
@@ -114,7 +119,8 @@ async def seed():
                 print(f"Updated site: {data['id']}")
 
         await db.commit()
-        print(f"Seed complete. Demo login password for all demo users: {DEMO_PASSWORD}")
+        print(f"Seed complete. Password for {DEMO_USERS[0][0]}: {DEMO_USERS[0][3]}")
+        print(f"Password for all other demo users: {DEMO_PASSWORD}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.accounts.router import router as auth_router
+from app.accounts.router import accounts_router, router as auth_router
 from app.compliance.router import router as compliance_router
 from app.config import settings
 from app.safety.router import router as safety_router
@@ -27,6 +27,7 @@ def health():
 
 
 app.include_router(auth_router, prefix="/api")
+app.include_router(accounts_router, prefix="/api")
 app.include_router(sites_router, prefix="/api")
 app.include_router(scan_session_router, prefix="/api")
 app.include_router(mineral_zone_router, prefix="/api")
