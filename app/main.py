@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.accounts.router import accounts_router, router as auth_router
+from app.audit.router import router as audit_router
 from app.compliance.router import router as compliance_router
 from app.config import settings
 from app.dashboard.router import router as dashboard_router
@@ -38,3 +39,4 @@ app.include_router(safety_router, prefix="/api")
 app.include_router(transport_router, prefix="/api")
 app.include_router(compliance_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
+app.include_router(audit_router, prefix="/api")

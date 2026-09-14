@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.models import User
+from app.audit.service import log_event
 from app.database import get_db
 from app.deps import get_current_user
 
@@ -86,8 +87,14 @@ async def update_batch(
     ).scalar_one_or_none()
     if obj is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
         setattr(obj, field, value)
+    if updates.get("compliant") is False:
+        await log_event(
+            db, user, "batch.flag_noncompliant", "mineral_batch", str(obj.id),
+            obj.compliance_note or "Marked non-compliant",
+        )
     await db.commit()
     await db.refresh(obj, attribute_names=["events"])
     return _build_batch_out(obj)
@@ -117,6 +124,12 @@ async def create_custody_event(
 
     event = CustodyEvent(**payload.model_dump(), authorised_by_id=user.id)
     db.add(event)
+    if event.flagged:
+        await db.flush()  # populate event.id (default=uuid.uuid4 applies at flush, not construction)
+        await log_event(
+            db, user, "custody.flag", "custody_event", str(event.id),
+            f"{event.event_type}: {event.from_party} -> {event.to_party}",
+        )
     await db.commit()
     await db.refresh(event)
     return event
