@@ -1,33 +1,43 @@
+from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from .models import ROLE_CHOICES
-
-# system_admin is platform-internal and must never be self-registerable —
-# the frontend already hides it from the role dropdown, but that's only a
-# UI nicety; a direct API call would otherwise bypass it entirely.
-SELF_REGISTERABLE_ROLES = tuple(r for r in ROLE_CHOICES if r != "system_admin")
+from .models import INVITABLE_ROLES
 
 
 class RegisterIn(BaseModel):
+    """Self-registration always creates a new Organisation + org_admin —
+    there is no role field. Teammates are added afterwards via invitations."""
+
     full_name: str
     email: EmailStr
     password: str = Field(min_length=8)
-    role: str
     organisation_name: Optional[str] = ""
-
-    @field_validator("role")
-    @classmethod
-    def role_must_be_valid(cls, v: str) -> str:
-        if v not in SELF_REGISTERABLE_ROLES:
-            raise ValueError(f"Invalid role. Must be one of: {', '.join(SELF_REGISTERABLE_ROLES)}")
-        return v
 
 
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+
+
+class VerificationRequiredOut(BaseModel):
+    """Returned right after an account is created (register or accept-invite)
+    — the account is inactive until the emailed code is confirmed via
+    /auth/verify-otp/, which then activates it and returns tokens."""
+
+    verification_required: bool = True
+    email: str
+
+
+class VerifyOtpIn(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=6)
+
+
+class ResendOtpIn(BaseModel):
+    email: EmailStr
 
 
 class RefreshIn(BaseModel):
@@ -42,6 +52,7 @@ class UserOut(BaseModel):
     role: str
     roleLabel: str
     initials: str
+    isActive: bool = True
     orgId: Optional[str] = None
     orgName: Optional[str] = None
 
@@ -54,3 +65,39 @@ class TokenOut(BaseModel):
 
 class AccessTokenOut(BaseModel):
     access: str
+
+
+class InvitationCreate(BaseModel):
+    email: EmailStr
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def role_must_be_invitable(cls, v: str) -> str:
+        if v not in INVITABLE_ROLES:
+            raise ValueError(f"Invalid role. Must be one of: {', '.join(INVITABLE_ROLES)}")
+        return v
+
+
+class InvitationOut(BaseModel):
+    id: UUID
+    email: str
+    role: str
+    status: str
+    expires_at: datetime
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class InviteDetailOut(BaseModel):
+    email: str
+    role: str
+    organisation_name: str
+    valid: bool
+
+
+class AcceptInviteIn(BaseModel):
+    token: str
+    full_name: str
+    password: str = Field(min_length=8)

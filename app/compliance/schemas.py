@@ -3,21 +3,20 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ComplianceReportOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: UUID
     title: str
     framework: str
     period: str
     status: str
-    coverage_pct: Decimal
-    flagged_lots: int
-    submitted_to: str
-    generated_by_id: Optional[UUID] = None
+    coveragePct: float = Field(validation_alias="coverage_pct")
+    flaggedLots: int = Field(validation_alias="flagged_lots")
+    submittedTo: str = Field(validation_alias="submitted_to")
     created_at: datetime
     updated_at: datetime
 
