@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -36,6 +36,7 @@ class MineralBatch(Base):
     grade_confirmed: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="scanned")
     qr_code_url: Mapped[str] = mapped_column(String(500), default="")
+    compliant: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
