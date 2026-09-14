@@ -42,6 +42,7 @@ class Site(Base):
     risk_level: Mapped[str] = mapped_column(String(10), default="low")
     status: Mapped[str] = mapped_column(String(12), default="active")
     last_scan: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_scan_method: Mapped[str] = mapped_column(String(50), default="")
     depth_meters: Mapped[int] = mapped_column(default=0)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
