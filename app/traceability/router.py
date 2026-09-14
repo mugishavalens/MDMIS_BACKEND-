@@ -25,10 +25,18 @@ def _scope_batches(query, user: User):
     return query.where(MineralBatch.organisation_id == user.organisation_id)
 
 
+def _build_batch_out(batch: MineralBatch) -> MineralBatchOut:
+    """currentStage isn't a stored column — custody events are an immutable
+    append-only log (REQ-TRACE-003), so "current stage" is derived from the
+    latest event each time rather than cached and risking drift."""
+    stage = max(batch.events, key=lambda e: e.timestamp).event_type if batch.events else "extraction"
+    return MineralBatchOut.model_validate(batch).model_copy(update={"currentStage": stage})
+
+
 @batch_router.get("/", response_model=list[MineralBatchOut])
 async def list_batches(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     result = await db.execute(_scope_batches(select(MineralBatch), user))
-    return result.scalars().all()
+    return [_build_batch_out(b) for b in result.scalars().all()]
 
 
 @batch_router.post("/", response_model=MineralBatchOut, status_code=status.HTTP_201_CREATED)
@@ -52,8 +60,8 @@ async def create_batch(
     )
     db.add(batch)
     await db.commit()
-    await db.refresh(batch)
-    return batch
+    await db.refresh(batch, attribute_names=["events"])
+    return _build_batch_out(batch)
 
 
 @batch_router.get("/{batch_id}", response_model=MineralBatchOut)
@@ -63,7 +71,7 @@ async def get_batch(batch_id: UUID, db: AsyncSession = Depends(get_db), user: Us
     ).scalar_one_or_none()
     if obj is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
-    return obj
+    return _build_batch_out(obj)
 
 
 @batch_router.patch("/{batch_id}", response_model=MineralBatchOut)
@@ -81,8 +89,8 @@ async def update_batch(
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(obj, field, value)
     await db.commit()
-    await db.refresh(obj)
-    return obj
+    await db.refresh(obj, attribute_names=["events"])
+    return _build_batch_out(obj)
 
 
 # --- Custody events: create/list/retrieve only — immutable, per REQ-TRACE-003 ---

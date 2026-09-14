@@ -37,6 +37,7 @@ class MineralBatch(Base):
     status: Mapped[str] = mapped_column(String(20), default="scanned")
     qr_code_url: Mapped[str] = mapped_column(String(500), default="")
     compliant: Mapped[bool] = mapped_column(Boolean, default=True)
+    compliance_note: Mapped[str] = mapped_column(Text, default="")
 
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -61,5 +62,6 @@ class CustodyEvent(Base):
     authorised_by_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     notes: Mapped[str] = mapped_column(Text, default="")
+    flagged: Mapped[bool] = mapped_column(Boolean, default=False)
 
     batch: Mapped["MineralBatch"] = relationship(back_populates="events")
