@@ -39,6 +39,11 @@ class MineralZone(Base):
     organisation_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("organisations.id", ondelete="CASCADE"))
     mineral_type: Mapped[str] = mapped_column(String(20))
     confidence_score: Mapped[int] = mapped_column(default=0)
+    # [{"mineral": str, "probability": float}, ...] — the classifier's full
+    # ranked output, not just the winning mineral_type/confidence_score.
+    confidence_alternatives: Mapped[list] = mapped_column(JSON, default=list)
+    grade_pct: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    area_ha: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     estimated_depth_m: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
     estimated_tonnage: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="unconfirmed")
