@@ -19,6 +19,8 @@ class Shipment(Base):
     organisation_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("organisations.id", ondelete="CASCADE"))
     batch_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("mineral_batches.id", ondelete="SET NULL"), nullable=True)
 
+    mineral_type: Mapped[str] = mapped_column(String(20), default="")
+
     origin_name: Mapped[str] = mapped_column(String(255))
     origin_lat: Mapped[float] = mapped_column(Numeric(9, 6))
     origin_lng: Mapped[float] = mapped_column(Numeric(9, 6))

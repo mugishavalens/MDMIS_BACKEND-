@@ -11,17 +11,18 @@ class SiteOut(BaseModel):
     id: str
     name: str
     district: str
-    lat: Decimal
-    lng: Decimal
+    lat: float
+    lng: float
     primaryMineral: str = Field(validation_alias="primary_mineral")
     secondaryMinerals: list = Field(validation_alias="secondary_minerals")
-    gradePct: Decimal = Field(validation_alias="grade_pct")
-    confidence: Decimal
+    gradePct: float = Field(validation_alias="grade_pct")
+    confidence: float
     estimatedTonnage: int = Field(validation_alias="estimated_tonnage")
     safetyScore: int = Field(validation_alias="safety_score")
     riskLevel: str = Field(validation_alias="risk_level")
     status: str
     lastScan: Optional[datetime] = Field(default=None, validation_alias="last_scan")
+    lastScanMethod: str = Field(default="", validation_alias="last_scan_method")
     depthMeters: int = Field(validation_alias="depth_meters")
 
 
@@ -30,8 +31,8 @@ class SiteCreate(BaseModel):
     name: str
     district: str = ""
     country_code: str = "RW"
-    lat: Decimal
-    lng: Decimal
+    lat: float
+    lng: float
     primary_mineral: str
     secondary_minerals: list = []
     grade_pct: Decimal = Decimal("0")
@@ -41,6 +42,7 @@ class SiteCreate(BaseModel):
     risk_level: str = "low"
     status: str = "active"
     last_scan: Optional[datetime] = None
+    last_scan_method: str = ""
     depth_meters: int = 0
 
 
@@ -58,4 +60,5 @@ class SiteUpdate(BaseModel):
     risk_level: Optional[str] = None
     status: Optional[str] = None
     last_scan: Optional[datetime] = None
+    last_scan_method: Optional[str] = None
     depth_meters: Optional[int] = None
