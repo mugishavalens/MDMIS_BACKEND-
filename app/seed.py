@@ -14,7 +14,7 @@ from app.scans.models import MineralZone, ScanSession
 from app.security import hash_password
 from app.sites.models import Site
 from app.traceability.models import CustodyEvent, MineralBatch
-from app.transport.models import Shipment
+from app.transport.models import Driver, Shipment, ShipmentEvent, ShipmentPing, Vehicle
 
 DEMO_PASSWORD = "demo1234"
 
@@ -171,6 +171,84 @@ DEMO_SHIPMENTS = [
          status="loading", progress_pct=5, eta_hours=14.0, weight_kg=640, gps_integrity=True),
 ]
 
+# (name, plate, type, capacity_kg, status)
+DEMO_VEHICLES = [
+    ("Truck-08", "RAD 208 K", "truck", 12000, "available"),
+    ("Truck-14", "RAD 514 B", "truck", 15000, "available"),
+    ("Truck-22", "RAE 022 C", "truck", 10000, "available"),
+    ("Truck-31", "RAE 131 D", "truck", 15000, "available"),
+    ("Pickup-03", "RAC 903 A", "pickup", 1200, "maintenance"),
+]
+# (full_name, phone, license_no)
+DEMO_DRIVERS = [
+    ("J. Nkurunziza", "+250 788 100 201", "RW-DL-448120"),
+    ("P. Habiyaremye", "+250 788 100 202", "RW-DL-448121"),
+    ("A. Uwase", "+250 788 100 203", "RW-DL-448122"),
+    ("E. Mugabo", "+250 788 100 204", "RW-DL-448123"),
+]
+
+
+def _trail(o_lat, o_lng, d_lat, d_lng, upto_pct, points, last_age_min, step_min):
+    """Evenly spaced positions from origin to upto_pct of the way, the last
+    one last_age_min minutes ago and earlier ones step_min apart."""
+    now = datetime.now(timezone.utc)
+    out = []
+    for i in range(1, points + 1):
+        f = upto_pct / 100 * i / points
+        at = now - timedelta(minutes=last_age_min + (points - i) * step_min)
+        out.append((o_lat + (d_lat - o_lat) * f, o_lng + (d_lng - o_lng) * f, at))
+    return out
+
+
+async def seed_fleet(db, org):
+    """Vehicle/driver registry + GPS trails, linked onto the demo shipments.
+    Separate from the shipment seed so it also upgrades a database seeded
+    before the fleet registry existed."""
+    if await db.scalar(select(func.count(Vehicle.id)).where(Vehicle.organisation_id == org.id)):
+        return
+    vehicles = {}
+    for name, plate, vtype, cap, vstatus in DEMO_VEHICLES:
+        vehicles[name] = Vehicle(organisation_id=org.id, name=name, plate=plate, vehicle_type=vtype,
+                                 capacity_kg=cap, status=vstatus)
+        db.add(vehicles[name])
+    drivers = {}
+    for full_name, phone, license_no in DEMO_DRIVERS:
+        drivers[full_name] = Driver(organisation_id=org.id, full_name=full_name, phone=phone, license_no=license_no)
+        db.add(drivers[full_name])
+    await db.flush()
+
+    shipments = (await db.execute(
+        select(Shipment).where(Shipment.organisation_id == org.id).order_by(Shipment.created_at)
+    )).scalars().all()
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    for i, sh in enumerate(shipments, start=1):
+        if sh.vehicle in vehicles:
+            sh.vehicle_id = vehicles[sh.vehicle].id
+        if sh.driver in drivers:
+            sh.driver_id = drivers[sh.driver].id
+        if not sh.reference:
+            sh.reference = f"SHP-{today}-{i:04d}"
+        db.add(ShipmentEvent(shipment_id=sh.id, event_type="created", actor_name="Seed"))
+        if sh.status not in ("in-transit", "delayed"):
+            continue
+        # The delayed truck's last fix is 40 min old, so its GPS loss comes
+        # from the real staleness rule rather than a hand-set flag.
+        last_age = 40 if sh.status == "delayed" else 3
+        trail = _trail(float(sh.origin_lat), float(sh.origin_lng), float(sh.destination_lat),
+                       float(sh.destination_lng), sh.progress_pct, 6, last_age, 25)
+        sh.departed_at = trail[0][2] - timedelta(minutes=20)
+        db.add(ShipmentEvent(shipment_id=sh.id, event_type="departed", actor_name="Seed", created_at=sh.departed_at))
+        if sh.status == "delayed":
+            db.add(ShipmentEvent(shipment_id=sh.id, event_type="delayed", actor_name="Seed",
+                                 note="Road works near Base; convoy held at checkpoint.",
+                                 created_at=trail[-1][2] + timedelta(minutes=5)))
+        for lat, lng, at in trail:
+            db.add(ShipmentPing(shipment_id=sh.id, lat=round(lat, 6), lng=round(lng, 6), speed_kmh=48,
+                                source="device", recorded_at=at))
+        sh.last_lat, sh.last_lng, sh.last_ping_at = round(trail[-1][0], 6), round(trail[-1][1], 6), trail[-1][2]
+    print(f"Seeded {len(DEMO_VEHICLES)} vehicle(s), {len(DEMO_DRIVERS)} driver(s) and fleet tracking.")
+
+
 # ---- Compliance -----------------------------------------------------------
 
 DEMO_REPORTS = [
@@ -307,6 +385,8 @@ async def seed():
                     weight_kg=data["weight_kg"], gps_integrity=data["gps_integrity"],
                 ))
             print(f"Seeded {len(DEMO_SHIPMENTS)} shipment(s).")
+            await db.flush()
+        await seed_fleet(db, org)
 
         # ---- Compliance -----------------------------------------------------
         report_count = await db.scalar(select(func.count(ComplianceReport.id)).where(ComplianceReport.organisation_id == org.id))
