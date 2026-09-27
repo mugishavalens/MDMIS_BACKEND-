@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.accounts.models import User
+from app.audit.service import log_event
 from app.database import get_db
 from app.deps import get_current_user
 
@@ -65,6 +66,8 @@ async def create_incident(
 ):
     incident = SafetyIncident(**payload.model_dump(), organisation_id=user.organisation_id, reported_by_id=user.id)
     db.add(incident)
+    await db.flush()  # populate incident.id (default=uuid.uuid4 applies at flush, not construction)
+    await log_event(db, user, "safety.report", "safety_incident", str(incident.id), payload.incident_type)
     await db.commit()
     await db.refresh(incident)
     return _build_out(incident, user, None)
@@ -115,6 +118,7 @@ async def acknowledge_incident(
     obj.status = "acknowledged"
     obj.acknowledged_by_id = user.id
     obj.acknowledged_at = datetime.now(timezone.utc)
+    await log_event(db, user, "safety.acknowledge", "safety_incident", str(obj.id), obj.incident_type)
     await db.commit()
     await db.refresh(obj)
     reporter = await db.get(User, obj.reported_by_id) if obj.reported_by_id else None

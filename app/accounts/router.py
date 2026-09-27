@@ -7,6 +7,7 @@ from slugify import slugify
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.service import log_event
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, require_org_admin
@@ -269,6 +270,8 @@ async def create_invitation(
         expires_at=datetime.now(timezone.utc) + timedelta(days=settings.invitation_expire_days),
     )
     db.add(invite)
+    await db.flush()  # populate invite.id (default=uuid.uuid4 applies at flush, not construction)
+    await log_event(db, user, "invite.create", "invitation", str(invite.id), f"Invited {email} as {payload.role}")
     await db.commit()
     await db.refresh(invite)
 
@@ -304,5 +307,6 @@ async def revoke_invitation(
     invite = await db.scalar(query)
     if not invite:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found.")
+    await log_event(db, user, "invite.revoke", "invitation", str(invite.id), f"Revoked invite for {invite.email}")
     await db.delete(invite)
     await db.commit()
