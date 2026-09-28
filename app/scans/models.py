@@ -23,6 +23,11 @@ class ScanSession(Base):
     operator_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     sensor_types: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="uploaded")
+    # {"x_values": [...], "intensities": [...]} — the spectral reading sent
+    # to POST /scans/{id}/classify, kept so scripts/retrain.py (in the ML
+    # service repo) can later pair a lab_confirmed MineralZone back to the
+    # spectrum that produced it.
+    raw_reading: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -48,6 +53,11 @@ class MineralZone(Base):
     estimated_tonnage: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="unconfirmed")
     flagged_anomaly: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Which classifier produced this prediction (e.g. "v1") — set by
+    # POST /scans/{id}/classify, null for zones created by hand via the
+    # generic CRUD endpoint. Lets a later model version be audited/compared
+    # against what was actually deployed when a given zone was created.
+    model_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     scan_session: Mapped["ScanSession"] = relationship(back_populates="zones")

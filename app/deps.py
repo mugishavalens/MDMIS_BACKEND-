@@ -1,11 +1,12 @@
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.models import User
+from app.config import settings
 from app.database import get_db
 from app.security import decode_token
 
@@ -51,6 +52,14 @@ def require_role(*roles: str):
         return current_user
 
     return checker
+
+
+async def require_service_key(x_ml_service_key: str = Header(...)) -> None:
+    """Gate for endpoints called by mdmis-ml-service rather than a logged-in
+    user (e.g. the retrain-data pull) — checked against a shared secret
+    instead of a JWT, since there's no User row for the ML service."""
+    if x_ml_service_key != settings.ml_service_api_key:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid service key.")
 
 
 async def require_org_admin(current_user: User = Depends(get_current_user)) -> User:
