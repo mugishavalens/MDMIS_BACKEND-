@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from app.accounts.models import Organisation, User
 from app.compliance.models import ComplianceReport
 from app.database import AsyncSessionLocal
-from app.safety.models import SafetyIncident
+from app.safety.models import IncidentEvent, SafetyIncident
 from app.scans.models import MineralZone, ScanSession
 from app.security import hash_password
 from app.sites.models import Site
@@ -265,13 +265,19 @@ DEMO_REPORTS = [
 DEMO_INCIDENTS = [
     dict(site_id="RW-MSH-08", incident_type="structural_instability", risk_score=88, status="open",
          description="Subsurface instability detected - safety score dropped to 34.",
-         reporter_email="geo@mdmis.rw"),
+         reporter_email="geo@mdmis.rw",
+         sensor_readings={"ground_displacement_mm": 14.2, "displacement_rate_mm_per_h": 1.8, "gpr_void_depth_m": 22,
+                          "vibration_ppv_mm_s": 6.4, "safety_score": 34}),
     dict(site_id="RW-GFW-04", incident_type="slope_failure", risk_score=61, status="acknowledged",
          description="Minor slope movement detected after heavy rainfall.",
-         reporter_email="analyst@mdmis.rw", acknowledger_email="analyst@mdmis.rw"),
+         reporter_email="analyst@mdmis.rw", acknowledger_email="analyst@mdmis.rw",
+         sensor_readings={"slope_angle_deg": 38.5, "prism_movement_mm": 7.1, "rainfall_24h_mm": 64,
+                          "pore_pressure_kpa": 112}),
     dict(site_id="RW-BGR-07", incident_type="gas_threshold", risk_score=35, status="resolved",
          description="CO2 sensor briefly exceeded threshold; ventilation corrected.",
-         reporter_email="geo@mdmis.rw", acknowledger_email="analyst@mdmis.rw"),
+         reporter_email="geo@mdmis.rw", acknowledger_email="analyst@mdmis.rw",
+         sensor_readings={"co2_ppm": 5800, "co2_threshold_ppm": 5000, "o2_pct": 19.8, "ch4_pct_lel": 3,
+                          "exceedance_minutes": 11}),
 ]
 
 
@@ -401,16 +407,45 @@ async def seed():
             for data in DEMO_INCIDENTS:
                 reporter = users_by_email[data["reporter_email"]]
                 acknowledger_email = data.get("acknowledger_email")
+                site = await db.get(Site, data["site_id"])
+                reported_at = datetime.now(timezone.utc) - timedelta(hours=9)
                 incident = SafetyIncident(
                     organisation_id=org.id, site_id=data["site_id"], incident_type=data["incident_type"],
                     risk_score=data["risk_score"], status=data["status"], description=data["description"],
-                    reported_by_id=reporter.id,
+                    reported_by_id=reporter.id, sensor_readings=data["sensor_readings"],
+                    gps_lat=site.lat if site else None, gps_lng=site.lng if site else None, created_at=reported_at,
                 )
-                if acknowledger_email:
-                    incident.acknowledged_by_id = users_by_email[acknowledger_email].id
-                    incident.acknowledged_at = datetime.now(timezone.utc) - timedelta(hours=6)
                 db.add(incident)
+                await db.flush()
+                db.add(IncidentEvent(incident_id=incident.id, event_type="reported", note=data["description"],
+                                     actor_id=reporter.id, actor_name=reporter.full_name, created_at=reported_at))
+                if acknowledger_email:
+                    ack = users_by_email[acknowledger_email]
+                    incident.acknowledged_by_id = ack.id
+                    incident.acknowledged_at = reported_at + timedelta(minutes=25)
+                    db.add(IncidentEvent(incident_id=incident.id, event_type="acknowledged", actor_id=ack.id,
+                                         actor_name=ack.full_name, created_at=incident.acknowledged_at))
+                if data["status"] == "resolved":
+                    incident.resolved_by_id = ack.id
+                    incident.resolved_at = reported_at + timedelta(hours=2)
+                    db.add(IncidentEvent(incident_id=incident.id, event_type="resolved", actor_id=ack.id,
+                                         actor_name=ack.full_name, created_at=incident.resolved_at,
+                                         note="Ventilation fan restarted; CO2 back under threshold for 60 min."))
             print(f"Seeded {len(DEMO_INCIDENTS)} safety incident(s).")
+        else:
+            # Older seeds stored no readings or position — fill those in.
+            for data in DEMO_INCIDENTS:
+                rows = (await db.execute(select(SafetyIncident).where(
+                    SafetyIncident.organisation_id == org.id, SafetyIncident.site_id == data["site_id"],
+                    SafetyIncident.incident_type == data["incident_type"],
+                ))).scalars().all()
+                for inc in rows:
+                    if not inc.sensor_readings:
+                        inc.sensor_readings = data["sensor_readings"]
+                    if inc.gps_lat is None:
+                        site = await db.get(Site, inc.site_id)
+                        if site:
+                            inc.gps_lat, inc.gps_lng = site.lat, site.lng
 
         await db.commit()
         print(f"Seed complete. Password for {DEMO_USERS[0][0]}: {DEMO_USERS[0][3]}")

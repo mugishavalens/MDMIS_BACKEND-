@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,9 +25,35 @@ class SafetyIncidentOut(BaseModel):
     acknowledgedById: Optional[UUID] = Field(default=None, validation_alias="acknowledged_by_id")
     acknowledgedByName: Optional[str] = None
     acknowledgedAt: Optional[datetime] = Field(default=None, validation_alias="acknowledged_at")
+    resolvedById: Optional[UUID] = Field(default=None, validation_alias="resolved_by_id")
+    resolvedByName: Optional[str] = None
+    resolvedAt: Optional[datetime] = Field(default=None, validation_alias="resolved_at")
     status: str
     description: str
     created_at: datetime
+
+
+class IncidentEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    eventType: str = Field(validation_alias="event_type")
+    note: str
+    actorName: str = Field(validation_alias="actor_name")
+    createdAt: datetime = Field(validation_alias="created_at")
+
+
+class SafetyIncidentDetailOut(SafetyIncidentOut):
+    events: list[IncidentEventOut] = []
+
+
+class IncidentStatusChange(BaseModel):
+    status: Literal["acknowledged", "escalated", "resolved", "open"]
+    note: str = ""
+
+
+class IncidentNoteIn(BaseModel):
+    note: str = Field(min_length=1, max_length=4000)
 
 
 class SafetyIncidentCreate(BaseModel):
