@@ -1,3 +1,5 @@
+import base64
+import binascii
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Union
@@ -28,6 +30,7 @@ from .models import Invitation, Organisation, User
 from .schemas import (
     AcceptInviteIn,
     AccessTokenOut,
+    AvatarIn,
     ChangePasswordIn,
     InvitationCreate,
     InvitationOut,
@@ -66,6 +69,7 @@ def _user_out(user: User) -> UserOut:
         isActive=user.is_active,
         orgId=str(user.organisation_id) if user.organisation_id else None,
         orgName=user.organisation.name if user.organisation else None,
+        avatarUrl=user.avatar,
     )
 
 
@@ -198,6 +202,43 @@ async def me(current_user: User = Depends(get_current_user)):
     return _user_out(current_user)
 
 
+_AVATAR_MAX_BYTES = 200 * 1024
+# Magic bytes, so the stored "image" really is one whatever the prefix says.
+_AVATAR_SIGNATURES = {
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/webp": (b"RIFF",),
+}
+
+
+@router.put("/me/avatar/", response_model=UserOut)
+async def set_avatar(
+    payload: AvatarIn, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
+):
+    header, _, b64 = payload.data_url.partition(",")
+    mime = header.removeprefix("data:").removesuffix(";base64")
+    if not header.startswith("data:") or not header.endswith(";base64") or mime not in _AVATAR_SIGNATURES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Photo must be a JPEG, PNG or WebP image.")
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Photo data is corrupted.")
+    if len(raw) > _AVATAR_MAX_BYTES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Photo is too large (max 200 KB after resizing).")
+    if not raw.startswith(_AVATAR_SIGNATURES[mime]):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "File content doesn't match an image.")
+    current_user.avatar = payload.data_url
+    await db.commit()
+    return _user_out(current_user)
+
+
+@router.delete("/me/avatar/", response_model=UserOut)
+async def remove_avatar(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    current_user.avatar = None
+    await db.commit()
+    return _user_out(current_user)
+
+
 @router.post("/change-password/", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     payload: ChangePasswordIn,
@@ -255,7 +296,9 @@ async def accept_invite(payload: AcceptInviteIn, db: AsyncSession = Depends(get_
 async def list_org_users(db: AsyncSession = Depends(get_db), user: User = Depends(require_org_admin)):
     query = select(User)
     if user.role != "system_admin":
-        query = query.where(User.organisation_id == user.organisation_id)
+        # An org admin manages their own org's accounts only; platform
+        # system_admins aren't org members to manage, even if attached to one.
+        query = query.where(User.organisation_id == user.organisation_id, User.role != "system_admin")
     result = await db.execute(query.order_by(User.created_at))
     return [_user_out(u) for u in result.scalars().all()]
 
