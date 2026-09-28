@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     debug: bool = True
     database_url: str = "sqlite+aiosqlite:///./db.sqlite3"
     cors_allowed_origins: str = "http://localhost:3000"
+    # Optional regex for origins that can't be listed up front, e.g. Vercel
+    # preview deployments (a new URL per deploy). Empty = exact list only.
+    cors_allowed_origin_regex: str = ""
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30
 

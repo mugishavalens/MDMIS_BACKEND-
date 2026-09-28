@@ -28,6 +28,7 @@ from .models import Invitation, Organisation, User
 from .schemas import (
     AcceptInviteIn,
     AccessTokenOut,
+    ChangePasswordIn,
     InvitationCreate,
     InvitationOut,
     InviteDetailOut,
@@ -195,6 +196,21 @@ async def refresh(payload: RefreshIn):
 @router.get("/me/", response_model=UserOut)
 async def me(current_user: User = Depends(get_current_user)):
     return _user_out(current_user)
+
+
+@router.post("/change-password/", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: ChangePasswordIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current password is incorrect.")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "New password must be different from the current one.")
+    current_user.password_hash = hash_password(payload.new_password)
+    await log_event(db, current_user, "account.password_change", "user", str(current_user.id), "Changed own password")
+    await db.commit()
 
 
 @router.get("/invitations/{token}/", response_model=InviteDetailOut)
