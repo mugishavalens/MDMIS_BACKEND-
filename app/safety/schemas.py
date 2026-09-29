@@ -30,7 +30,38 @@ class SafetyIncidentOut(BaseModel):
     resolvedAt: Optional[datetime] = Field(default=None, validation_alias="resolved_at")
     status: str
     description: str
+    sourceLabel: str = Field(default="", validation_alias="source_label")
+    sourceDeviceId: Optional[UUID] = Field(default=None, validation_alias="source_device_id")
     created_at: datetime
+
+
+class SafetyRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    siteId: Optional[str] = Field(default=None, validation_alias="site_id")
+    metric: str
+    comparator: str
+    threshold: float
+    incidentType: str = Field(validation_alias="incident_type")
+    riskScore: int = Field(validation_alias="risk_score")
+    enabled: bool
+
+
+class SafetyRuleCreate(BaseModel):
+    site_id: Optional[str] = None
+    metric: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_]+$")
+    comparator: Literal["gt", "lt"]
+    threshold: float
+    incident_type: str = "gas_threshold"
+    risk_score: int = Field(default=70, ge=0, le=100)
+
+
+class SafetyRuleUpdate(BaseModel):
+    comparator: Optional[Literal["gt", "lt"]] = None
+    threshold: Optional[float] = None
+    risk_score: Optional[int] = Field(default=None, ge=0, le=100)
+    enabled: Optional[bool] = None
 
 
 class IncidentEventOut(BaseModel):

@@ -11,7 +11,8 @@ from app.audit.service import log_event
 from app.database import get_db
 from app.deps import get_current_user, require_role
 
-from .models import IncidentEvent, SafetyIncident
+from .models import IncidentEvent, SafetyIncident, SafetyRule
+from .rules import ensure_default_rules
 from .schemas import (
     IncidentEventOut,
     IncidentNoteIn,
@@ -20,12 +21,17 @@ from .schemas import (
     SafetyIncidentDetailOut,
     SafetyIncidentOut,
     SafetyIncidentUpdate,
+    SafetyRuleCreate,
+    SafetyRuleOut,
+    SafetyRuleUpdate,
 )
 
 # Hand-written rather than the generic CRUD factory (same reason scans'
 # scan_session_router is) so the response can include reportedByName /
 # acknowledgedByName / resolvedByName via joins to accounts.models.User.
 router = APIRouter(prefix="/safety", tags=["safety"])
+# Separate top-level prefix so "/safety/rules" can't be mistaken for an incident id.
+rules_router = APIRouter(prefix="/safety-rules", tags=["safety"])
 
 # Roles that may act on incidents (acknowledge/escalate/resolve/reopen) —
 # matches the frontend's safety.acknowledge permission. system_admin passes.
@@ -72,7 +78,8 @@ def _build_out(
 ) -> SafetyIncidentOut:
     out = SafetyIncidentOut.model_validate(incident)
     return out.model_copy(update={
-        "reportedByName": reporter.full_name if reporter else None,
+        # Sensor-raised incidents have no human reporter; name the sensor.
+        "reportedByName": reporter.full_name if reporter else (incident.source_label or None),
         "acknowledgedByName": acknowledger.full_name if acknowledger else None,
         "resolvedByName": resolver.full_name if resolver else None,
     })
@@ -211,3 +218,63 @@ async def add_incident_note(
     await db.commit()
     await db.refresh(event)
     return IncidentEventOut.model_validate(event)
+
+
+# ---- Threshold rules (REQ-SAFE-001) -------------------------------------------
+
+
+def _rule_scope(query, user: User):
+    if user.role == "system_admin":
+        return query
+    return query.where(SafetyRule.organisation_id == user.organisation_id)
+
+
+async def _get_rule(db: AsyncSession, user: User, rule_id: UUID) -> SafetyRule:
+    rule = (await db.execute(_rule_scope(select(SafetyRule).where(SafetyRule.id == rule_id), user))).scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
+    return rule
+
+
+@rules_router.get("/", response_model=list[SafetyRuleOut])
+async def list_rules(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    if user.organisation_id is not None:
+        await ensure_default_rules(db, user.organisation_id)
+        await db.commit()
+    rows = (await db.execute(_rule_scope(select(SafetyRule), user).order_by(SafetyRule.metric, SafetyRule.site_id))).scalars()
+    return [SafetyRuleOut.model_validate(r) for r in rows]
+
+
+@rules_router.post("/", response_model=SafetyRuleOut, status_code=status.HTTP_201_CREATED)
+async def create_rule(payload: SafetyRuleCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_responder)):
+    if user.organisation_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Your account has no organisation.")
+    rule = SafetyRule(**payload.model_dump(), organisation_id=user.organisation_id)
+    db.add(rule)
+    await log_event(db, user, "safety.rule_create", "safety_rule", "", f"{rule.metric} {rule.comparator} {rule.threshold}")
+    await db.commit()
+    await db.refresh(rule)
+    return SafetyRuleOut.model_validate(rule)
+
+
+@rules_router.patch("/{rule_id}", response_model=SafetyRuleOut)
+async def update_rule(
+    rule_id: UUID, payload: SafetyRuleUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_responder)
+):
+    rule = await _get_rule(db, user, rule_id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(rule, field, value)
+    await log_event(db, user, "safety.rule_update", "safety_rule", str(rule.id),
+                    f"{rule.metric} {rule.comparator} {rule.threshold} enabled={rule.enabled}")
+    await db.commit()
+    await db.refresh(rule)
+    return SafetyRuleOut.model_validate(rule)
+
+
+@rules_router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_rule(rule_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(require_responder)):
+    rule = await _get_rule(db, user, rule_id)
+    await log_event(db, user, "safety.rule_delete", "safety_rule", str(rule.id), rule.metric)
+    await db.delete(rule)
+    await db.commit()
+

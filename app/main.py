@@ -6,7 +6,8 @@ from app.audit.router import router as audit_router
 from app.compliance.router import router as compliance_router
 from app.config import settings
 from app.dashboard.router import router as dashboard_router
-from app.safety.router import router as safety_router
+from app.ingestion.router import devices_router, files_router, ingest_router, readings_router
+from app.safety.router import router as safety_router, rules_router as safety_rules_router
 from app.scans.router import mineral_zone_router, scan_session_router
 from app.sites.router import router as sites_router
 from app.traceability.router import batch_router, custody_event_router
@@ -37,9 +38,14 @@ app.include_router(mineral_zone_router, prefix="/api")
 app.include_router(batch_router, prefix="/api")
 app.include_router(custody_event_router, prefix="/api")
 app.include_router(safety_router, prefix="/api")
+app.include_router(safety_rules_router, prefix="/api")
 app.include_router(transport_router, prefix="/api")
 app.include_router(vehicle_router, prefix="/api")
 app.include_router(driver_router, prefix="/api")
 app.include_router(compliance_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
+app.include_router(devices_router, prefix="/api")
+app.include_router(ingest_router, prefix="/api")
+app.include_router(files_router, prefix="/api")
+app.include_router(readings_router, prefix="/api")

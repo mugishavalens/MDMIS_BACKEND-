@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -37,6 +37,32 @@ class SafetyIncident(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="open")
     description: Mapped[str] = mapped_column(Text, default="")
+    # Set when a sensor reading breached a SafetyRule and opened this
+    # incident automatically (no human reporter).
+    source_device_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID, ForeignKey("sensor_devices.id", ondelete="SET NULL"), nullable=True
+    )
+    rule_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("safety_rules.id", ondelete="SET NULL"), nullable=True)
+    source_label: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SafetyRule(Base):
+    """REQ-SAFE-001: a configurable threshold on one sensor metric. site_id
+    NULL applies to every site in the organisation; a site-specific rule for
+    the same metric overrides it."""
+
+    __tablename__ = "safety_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("organisations.id", ondelete="CASCADE"), index=True)
+    site_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("sites.id", ondelete="CASCADE"), nullable=True)
+    metric: Mapped[str] = mapped_column(String(40))
+    comparator: Mapped[str] = mapped_column(String(2))  # "gt" | "lt"
+    threshold: Mapped[float] = mapped_column(Float)
+    incident_type: Mapped[str] = mapped_column(String(30))
+    risk_score: Mapped[int] = mapped_column(default=70)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
