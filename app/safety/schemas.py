@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,9 +25,66 @@ class SafetyIncidentOut(BaseModel):
     acknowledgedById: Optional[UUID] = Field(default=None, validation_alias="acknowledged_by_id")
     acknowledgedByName: Optional[str] = None
     acknowledgedAt: Optional[datetime] = Field(default=None, validation_alias="acknowledged_at")
+    resolvedById: Optional[UUID] = Field(default=None, validation_alias="resolved_by_id")
+    resolvedByName: Optional[str] = None
+    resolvedAt: Optional[datetime] = Field(default=None, validation_alias="resolved_at")
     status: str
     description: str
+    sourceLabel: str = Field(default="", validation_alias="source_label")
+    sourceDeviceId: Optional[UUID] = Field(default=None, validation_alias="source_device_id")
     created_at: datetime
+
+
+class SafetyRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    siteId: Optional[str] = Field(default=None, validation_alias="site_id")
+    metric: str
+    comparator: str
+    threshold: float
+    incidentType: str = Field(validation_alias="incident_type")
+    riskScore: int = Field(validation_alias="risk_score")
+    enabled: bool
+
+
+class SafetyRuleCreate(BaseModel):
+    site_id: Optional[str] = None
+    metric: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_]+$")
+    comparator: Literal["gt", "lt"]
+    threshold: float
+    incident_type: str = "gas_threshold"
+    risk_score: int = Field(default=70, ge=0, le=100)
+
+
+class SafetyRuleUpdate(BaseModel):
+    comparator: Optional[Literal["gt", "lt"]] = None
+    threshold: Optional[float] = None
+    risk_score: Optional[int] = Field(default=None, ge=0, le=100)
+    enabled: Optional[bool] = None
+
+
+class IncidentEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    eventType: str = Field(validation_alias="event_type")
+    note: str
+    actorName: str = Field(validation_alias="actor_name")
+    createdAt: datetime = Field(validation_alias="created_at")
+
+
+class SafetyIncidentDetailOut(SafetyIncidentOut):
+    events: list[IncidentEventOut] = []
+
+
+class IncidentStatusChange(BaseModel):
+    status: Literal["acknowledged", "escalated", "resolved", "open"]
+    note: str = ""
+
+
+class IncidentNoteIn(BaseModel):
+    note: str = Field(min_length=1, max_length=4000)
 
 
 class SafetyIncidentCreate(BaseModel):

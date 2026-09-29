@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -64,6 +64,9 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
     is_staff: Mapped[bool] = mapped_column(Boolean, default=False)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Profile photo as a small data: URL (client resizes to 256px JPEG).
+    # Kept in the DB rather than on disk: Render's filesystem is ephemeral.
+    avatar: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Email MFA: a hashed 6-digit code + expiry, set on password-check success
     # and cleared once verify-otp succeeds. mfa_attempts caps brute-forcing.
