@@ -108,6 +108,7 @@ class SensorFileOut(BaseModel):
     warnings: list = Field(default_factory=list, validation_alias="validation_warnings")
     uploadMethod: str = Field(validation_alias="upload_method")
     uploadedByName: Optional[str] = None
+    deviceId: Optional[UUID] = Field(default=None, validation_alias="device_id")
     deviceName: Optional[str] = None
     created_at: datetime
 
