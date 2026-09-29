@@ -60,6 +60,7 @@ require_uploader = require_role("geologist", "mine_manager", "org_admin")
 require_device_manager = require_role("mine_manager", "org_admin")
 
 ONLINE_WINDOW = timedelta(minutes=15)
+LIVE_SENSOR_TYPES = ("gas", "geotechnical")
 _CHUNK = 1024 * 1024
 _MAX_FUTURE_SKEW = timedelta(minutes=5)
 
@@ -398,11 +399,14 @@ async def list_devices(db: AsyncSession = Depends(get_db), user: User = Depends(
 
 @devices_router.get("/summary", response_model=DeviceSummaryOut)
 async def device_summary(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    # active/online count live sensors only: survey devices (drones, rovers)
+    # upload after each survey, so being quiet between surveys is normal.
     cutoff = _now() - ONLINE_WINDOW
+    live = SensorDevice.sensor_type.in_(LIVE_SENSOR_TYPES)
     row = (await db.execute(_scope(select(
         func.count(SensorDevice.id),
-        func.count(SensorDevice.id).filter(SensorDevice.is_active.is_(True)),
-        func.count(SensorDevice.id).filter(SensorDevice.is_active.is_(True), SensorDevice.last_seen_at >= cutoff),
+        func.count(SensorDevice.id).filter(live, SensorDevice.is_active.is_(True)),
+        func.count(SensorDevice.id).filter(live, SensorDevice.is_active.is_(True), SensorDevice.last_seen_at >= cutoff),
     ), SensorDevice, user))).one()
     return DeviceSummaryOut(total=row[0], active=row[1], online=row[2])
 

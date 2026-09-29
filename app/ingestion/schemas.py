@@ -41,7 +41,7 @@ class DeviceUpdate(BaseModel):
 
 
 class DeviceSummaryOut(BaseModel):
-    total: int
+    total: int  # all devices; active/online count live sensors only
     active: int
     online: int
 

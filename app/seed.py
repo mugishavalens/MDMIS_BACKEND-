@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from app.accounts.models import Organisation, User
 from app.compliance.models import ComplianceReport
 from app.database import AsyncSessionLocal
+from app.ingestion.demo_seed import seed_sensor_demo
 from app.safety.models import IncidentEvent, SafetyIncident
 from app.scans.models import MineralZone, ScanSession
 from app.security import hash_password
@@ -446,6 +447,8 @@ async def seed():
                         site = await db.get(Site, inc.site_id)
                         if site:
                             inc.gps_lat, inc.gps_lng = site.lat, site.lng
+
+        await seed_sensor_demo(db, org, users_by_email)
 
         await db.commit()
         print(f"Seed complete. Password for {DEMO_USERS[0][0]}: {DEMO_USERS[0][3]}")
