@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     max_upload_mb: int = 500
     invitation_expire_days: int = 7
 
+    # mdmis-ml-service (separate repo/process). ml_service_api_key must
+    # match that service's own SERVICE_API_KEY — it's the shared secret
+    # both directions of backend<->ML-service traffic use.
+    ml_service_url: str = "http://localhost:8100"
+    ml_service_api_key: str = "dev-insecure-ml-service-key-change-me"
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     @property
