@@ -55,6 +55,7 @@ class UserOut(BaseModel):
     isActive: bool = True
     orgId: Optional[str] = None
     orgName: Optional[str] = None
+    avatarUrl: Optional[str] = None
 
 
 class TokenOut(BaseModel):
@@ -101,3 +102,12 @@ class AcceptInviteIn(BaseModel):
     token: str
     full_name: str
     password: str = Field(min_length=8)
+
+
+class AvatarIn(BaseModel):
+    data_url: str = Field(max_length=400_000)
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)

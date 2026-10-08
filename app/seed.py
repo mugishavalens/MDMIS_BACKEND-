@@ -2,14 +2,20 @@
 the frontend. Run with: python -m app.seed
 """
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.accounts.models import Organisation, User
+from app.compliance.models import ComplianceReport
 from app.database import AsyncSessionLocal
+from app.ingestion.demo_seed import seed_sensor_demo
+from app.safety.models import IncidentEvent, SafetyIncident
+from app.scans.models import MineralZone, ScanSession
 from app.security import hash_password
 from app.sites.models import Site
+from app.traceability.models import CustodyEvent, MineralBatch
+from app.transport.models import Driver, Shipment, ShipmentEvent, ShipmentPing, Vehicle
 
 DEMO_PASSWORD = "demo1234"
 
@@ -69,6 +75,216 @@ DEMO_SITES = [
          last_scan="2026-06-08T06:28:00Z", depth_meters=15),
 ]
 
+# ---- Scans ------------------------------------------------------------------
+
+DEMO_SCANS = [
+    dict(
+        site_id="RW-MSH-08", operator_email="geo@mdmis.rw", sensor_types=["hyperspectral"],
+        status="complete", uploaded_at="2026-06-08T11:02:00Z",
+        zones=[
+            dict(mineral_type="cassiterite", confidence_score=96, grade_pct=1.62, area_ha=14.2, alternatives=[
+                {"mineral": "cassiterite", "probability": 95.6}, {"mineral": "coltan", "probability": 3.1},
+                {"mineral": "wolframite", "probability": 1.3},
+            ]),
+        ],
+    ),
+    dict(
+        site_id="RW-RWK-05", operator_email="analyst@mdmis.rw", sensor_types=["gpr"],
+        status="complete", uploaded_at="2026-06-08T10:31:00Z",
+        zones=[
+            dict(mineral_type="gold", confidence_score=89, grade_pct=4.2, area_ha=6.1, alternatives=[
+                {"mineral": "gold", "probability": 88.7}, {"mineral": "cassiterite", "probability": 7.2},
+                {"mineral": "beryl", "probability": 4.1},
+            ]),
+        ],
+    ),
+    dict(
+        site_id="RW-RTG-01", operator_email="geo@mdmis.rw", sensor_types=["hyperspectral"],
+        status="complete", uploaded_at="2026-06-08T09:12:00Z",
+        zones=[
+            dict(mineral_type="cassiterite", confidence_score=96, grade_pct=1.8, area_ha=18.4, alternatives=[
+                {"mineral": "cassiterite", "probability": 96.4}, {"mineral": "wolframite", "probability": 2.4},
+                {"mineral": "coltan", "probability": 1.2},
+            ]),
+        ],
+    ),
+    dict(
+        site_id="RW-BGR-07", operator_email=None, sensor_types=["satellite"],
+        status="classifying", uploaded_at="2026-06-08T10:17:00Z", zones=[],
+    ),
+]
+
+# ---- Traceability -------------------------------------------------------------
+
+DEMO_BATCHES = [
+    dict(
+        seq=1, site_id="RW-RTG-01", mineral_type="cassiterite", weight_kg=1250, grade_detected=1.8,
+        grade_confirmed=1.78, status="in_transit", compliant=True, extraction_date="2026-05-24",
+        events=[
+            dict(event_type="extraction", from_party="Rutongo Mining Co.", to_party="RMB Agent",
+                 quantity_kg=1250, timestamp="2026-05-24T11:30:00Z"),
+            dict(event_type="weigh_in", from_party="RMB Agent", to_party="RMB Weigh Station",
+                 quantity_kg=1250, timestamp="2026-05-24T15:10:00Z"),
+            dict(event_type="dispatch", from_party="RMB Weigh Station", to_party="Kigali Logistics Hub",
+                 quantity_kg=1250, timestamp="2026-05-26T06:45:00Z"),
+        ],
+    ),
+    dict(
+        seq=1, site_id="RW-NMB-06", mineral_type="coltan", weight_kg=640, grade_detected=0.51,
+        grade_confirmed=None, status="in_storage", compliant=True, extraction_date="2026-06-03",
+        events=[
+            dict(event_type="extraction", from_party="Nemba Coop", to_party="RMB Agent",
+                 quantity_kg=640, timestamp="2026-06-03T10:00:00Z"),
+            dict(event_type="storage_in", from_party="RMB Agent", to_party="Kigali Logistics Hub",
+                 quantity_kg=640, timestamp="2026-06-05T16:40:00Z"),
+        ],
+    ),
+    dict(
+        seq=1, site_id="RW-GFW-04", mineral_type="wolframite", weight_kg=980, grade_detected=0.95,
+        grade_confirmed=None, status="scanned", compliant=False, extraction_date="2026-06-06",
+        compliance_note=(
+            "Extracted by an unregistered operator and tagged by a disputed agent. "
+            "Export blocked pending RMB investigation."
+        ),
+        events=[
+            dict(event_type="extraction", from_party="Unregistered operator", to_party="RMB Agent",
+                 quantity_kg=980, timestamp="2026-06-06T09:45:00Z"),
+            dict(event_type="weigh_in", from_party="RMB Agent (disputed)", to_party="RMB Weigh Station",
+                 quantity_kg=980, timestamp="2026-06-06T12:00:00Z", flagged=True),
+        ],
+    ),
+]
+
+# ---- Transport ----------------------------------------------------------------
+
+_KIGALI = dict(name="Kigali Logistics Hub", lat=-1.9441, lng=30.0619)
+_MOMBASA = dict(name="Port of Mombasa", lat=-4.0435, lng=39.6682)
+_DAR = dict(name="Port of Dar es Salaam", lat=-6.7924, lng=39.2083)
+
+DEMO_SHIPMENTS = [
+    dict(origin=_KIGALI, destination=_MOMBASA, driver="J. Nkurunziza", vehicle="Truck-14",
+         mineral_type="cassiterite", status="in-transit", progress_pct=62, eta_hours=9.5, weight_kg=1250,
+         gps_integrity=True),
+    dict(origin=dict(name="Rutongo Mine", lat=-1.7783, lng=30.0611), destination=_KIGALI, driver="P. Habiyaremye",
+         vehicle="Truck-08", mineral_type="wolframite", status="delayed", eta_hours=3.0, weight_kg=980,
+         gps_integrity=False, progress_pct=28),
+    dict(origin=_KIGALI, destination=_DAR, driver="A. Uwase", vehicle="Truck-22", mineral_type="coltan",
+         status="loading", progress_pct=5, eta_hours=14.0, weight_kg=640, gps_integrity=True),
+]
+
+# (name, plate, type, capacity_kg, status)
+DEMO_VEHICLES = [
+    ("Truck-08", "RAD 208 K", "truck", 12000, "available"),
+    ("Truck-14", "RAD 514 B", "truck", 15000, "available"),
+    ("Truck-22", "RAE 022 C", "truck", 10000, "available"),
+    ("Truck-31", "RAE 131 D", "truck", 15000, "available"),
+    ("Pickup-03", "RAC 903 A", "pickup", 1200, "maintenance"),
+]
+# (full_name, phone, license_no)
+DEMO_DRIVERS = [
+    ("J. Nkurunziza", "+250 788 100 201", "RW-DL-448120"),
+    ("P. Habiyaremye", "+250 788 100 202", "RW-DL-448121"),
+    ("A. Uwase", "+250 788 100 203", "RW-DL-448122"),
+    ("E. Mugabo", "+250 788 100 204", "RW-DL-448123"),
+]
+
+
+def _trail(o_lat, o_lng, d_lat, d_lng, upto_pct, points, last_age_min, step_min):
+    """Evenly spaced positions from origin to upto_pct of the way, the last
+    one last_age_min minutes ago and earlier ones step_min apart."""
+    now = datetime.now(timezone.utc)
+    out = []
+    for i in range(1, points + 1):
+        f = upto_pct / 100 * i / points
+        at = now - timedelta(minutes=last_age_min + (points - i) * step_min)
+        out.append((o_lat + (d_lat - o_lat) * f, o_lng + (d_lng - o_lng) * f, at))
+    return out
+
+
+async def seed_fleet(db, org):
+    """Vehicle/driver registry + GPS trails, linked onto the demo shipments.
+    Separate from the shipment seed so it also upgrades a database seeded
+    before the fleet registry existed."""
+    if await db.scalar(select(func.count(Vehicle.id)).where(Vehicle.organisation_id == org.id)):
+        return
+    vehicles = {}
+    for name, plate, vtype, cap, vstatus in DEMO_VEHICLES:
+        vehicles[name] = Vehicle(organisation_id=org.id, name=name, plate=plate, vehicle_type=vtype,
+                                 capacity_kg=cap, status=vstatus)
+        db.add(vehicles[name])
+    drivers = {}
+    for full_name, phone, license_no in DEMO_DRIVERS:
+        drivers[full_name] = Driver(organisation_id=org.id, full_name=full_name, phone=phone, license_no=license_no)
+        db.add(drivers[full_name])
+    await db.flush()
+
+    shipments = (await db.execute(
+        select(Shipment).where(Shipment.organisation_id == org.id).order_by(Shipment.created_at)
+    )).scalars().all()
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    for i, sh in enumerate(shipments, start=1):
+        if sh.vehicle in vehicles:
+            sh.vehicle_id = vehicles[sh.vehicle].id
+        if sh.driver in drivers:
+            sh.driver_id = drivers[sh.driver].id
+        if not sh.reference:
+            sh.reference = f"SHP-{today}-{i:04d}"
+        db.add(ShipmentEvent(shipment_id=sh.id, event_type="created", actor_name="Seed"))
+        if sh.status not in ("in-transit", "delayed"):
+            continue
+        # The delayed truck's last fix is 40 min old, so its GPS loss comes
+        # from the real staleness rule rather than a hand-set flag.
+        last_age = 40 if sh.status == "delayed" else 3
+        trail = _trail(float(sh.origin_lat), float(sh.origin_lng), float(sh.destination_lat),
+                       float(sh.destination_lng), sh.progress_pct, 6, last_age, 25)
+        sh.departed_at = trail[0][2] - timedelta(minutes=20)
+        db.add(ShipmentEvent(shipment_id=sh.id, event_type="departed", actor_name="Seed", created_at=sh.departed_at))
+        if sh.status == "delayed":
+            db.add(ShipmentEvent(shipment_id=sh.id, event_type="delayed", actor_name="Seed",
+                                 note="Road works near Base; convoy held at checkpoint.",
+                                 created_at=trail[-1][2] + timedelta(minutes=5)))
+        for lat, lng, at in trail:
+            db.add(ShipmentPing(shipment_id=sh.id, lat=round(lat, 6), lng=round(lng, 6), speed_kmh=48,
+                                source="device", recorded_at=at))
+        sh.last_lat, sh.last_lng, sh.last_ping_at = round(trail[-1][0], 6), round(trail[-1][1], 6), trail[-1][2]
+    print(f"Seeded {len(DEMO_VEHICLES)} vehicle(s), {len(DEMO_DRIVERS)} driver(s) and fleet tracking.")
+
+
+# ---- Compliance -----------------------------------------------------------
+
+DEMO_REPORTS = [
+    dict(title="OECD Due Diligence - Q2 Supply Chain", framework="oecd", period="Q2 2026", status="submitted",
+         coverage_pct=97.2, flagged_lots=1, submitted_to="OECD Secretariat"),
+    dict(title="ITSCI Traceability Audit", framework="itsci", period="Q2 2026", status="approved",
+         coverage_pct=99.1, flagged_lots=0, submitted_to="ITSCI Programme"),
+    dict(title="RMB Licensing Renewal", framework="rmb", period="2026", status="draft",
+         coverage_pct=84.0, flagged_lots=2, submitted_to="Rwanda Mines Board"),
+]
+
+# ---- Safety -----------------------------------------------------------------
+
+DEMO_INCIDENTS = [
+    dict(site_id="RW-MSH-08", incident_type="structural_instability", risk_score=88, status="open",
+         description="Subsurface instability detected - safety score dropped to 34.",
+         reporter_email="geo@mdmis.rw",
+         sensor_readings={"ground_displacement_mm": 14.2, "displacement_rate_mm_per_h": 1.8, "gpr_void_depth_m": 22,
+                          "vibration_ppv_mm_s": 6.4, "safety_score": 34}),
+    dict(site_id="RW-GFW-04", incident_type="slope_failure", risk_score=61, status="acknowledged",
+         description="Minor slope movement detected after heavy rainfall.",
+         reporter_email="analyst@mdmis.rw", acknowledger_email="analyst@mdmis.rw",
+         sensor_readings={"slope_angle_deg": 38.5, "prism_movement_mm": 7.1, "rainfall_24h_mm": 64,
+                          "pore_pressure_kpa": 112}),
+    dict(site_id="RW-BGR-07", incident_type="gas_threshold", risk_score=35, status="resolved",
+         description="CO2 sensor briefly exceeded threshold; ventilation corrected.",
+         reporter_email="geo@mdmis.rw", acknowledger_email="analyst@mdmis.rw",
+         sensor_readings={"co2_ppm": 5800, "co2_threshold_ppm": 5000, "o2_pct": 19.8, "ch4_pct_lel": 3,
+                          "exceedance_minutes": 11}),
+]
+
+
+def _iso(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
 
 async def seed():
     async with AsyncSessionLocal() as db:
@@ -117,6 +333,122 @@ async def seed():
                         continue
                     setattr(site, k, v)
                 print(f"Updated site: {data['id']}")
+
+        await db.flush()
+        users_by_email = {u.email: u for u in (await db.execute(select(User).where(User.organisation_id == org.id))).scalars()}
+
+        # ---- Scans (only if the org has none yet — these aren't idempotent
+        # per-record like sites/users, just "don't pile up on every run") ----
+        scan_count = await db.scalar(select(func.count(ScanSession.id)).where(ScanSession.organisation_id == org.id))
+        if not scan_count:
+            for data in DEMO_SCANS:
+                operator = users_by_email.get(data["operator_email"]) if data["operator_email"] else None
+                session = ScanSession(
+                    organisation_id=org.id, site_id=data["site_id"], operator_id=operator.id if operator else None,
+                    sensor_types=data["sensor_types"], status=data["status"], uploaded_at=_iso(data["uploaded_at"]),
+                )
+                db.add(session)
+                await db.flush()
+                for zone in data["zones"]:
+                    db.add(MineralZone(
+                        scan_session_id=session.id, organisation_id=org.id, mineral_type=zone["mineral_type"],
+                        confidence_score=zone["confidence_score"], confidence_alternatives=zone["alternatives"],
+                        grade_pct=zone["grade_pct"], area_ha=zone["area_ha"],
+                    ))
+            print(f"Seeded {len(DEMO_SCANS)} scan session(s).")
+
+        # ---- Traceability -----------------------------------------------------
+        batch_count = await db.scalar(select(func.count(MineralBatch.id)).where(MineralBatch.organisation_id == org.id))
+        if not batch_count:
+            for data in DEMO_BATCHES:
+                date_part = data["extraction_date"].replace("-", "")
+                coc_id = f"COC-{data['site_id']}-{date_part}-{data['seq']:04d}"
+                batch = MineralBatch(
+                    coc_id=coc_id, organisation_id=org.id, site_id=data["site_id"], mineral_type=data["mineral_type"],
+                    weight_kg=data["weight_kg"], grade_detected=data["grade_detected"],
+                    grade_confirmed=data["grade_confirmed"], status=data["status"], compliant=data["compliant"],
+                    compliance_note=data.get("compliance_note", ""), created_by_id=users_by_email["geo@mdmis.rw"].id,
+                )
+                db.add(batch)
+                await db.flush()
+                for ev in data["events"]:
+                    db.add(CustodyEvent(
+                        batch_id=batch.id, event_type=ev["event_type"], from_party=ev["from_party"],
+                        to_party=ev["to_party"], quantity_kg=ev["quantity_kg"], timestamp=_iso(ev["timestamp"]),
+                        flagged=ev.get("flagged", False),
+                    ))
+            print(f"Seeded {len(DEMO_BATCHES)} mineral batch(es).")
+
+        # ---- Transport ----------------------------------------------------------
+        shipment_count = await db.scalar(select(func.count(Shipment.id)).where(Shipment.organisation_id == org.id))
+        if not shipment_count:
+            for data in DEMO_SHIPMENTS:
+                db.add(Shipment(
+                    organisation_id=org.id, mineral_type=data["mineral_type"],
+                    origin_name=data["origin"]["name"], origin_lat=data["origin"]["lat"], origin_lng=data["origin"]["lng"],
+                    destination_name=data["destination"]["name"], destination_lat=data["destination"]["lat"],
+                    destination_lng=data["destination"]["lng"], driver=data["driver"], vehicle=data["vehicle"],
+                    status=data["status"], progress_pct=data["progress_pct"], eta_hours=data["eta_hours"],
+                    weight_kg=data["weight_kg"], gps_integrity=data["gps_integrity"],
+                ))
+            print(f"Seeded {len(DEMO_SHIPMENTS)} shipment(s).")
+            await db.flush()
+        await seed_fleet(db, org)
+
+        # ---- Compliance -----------------------------------------------------
+        report_count = await db.scalar(select(func.count(ComplianceReport.id)).where(ComplianceReport.organisation_id == org.id))
+        if not report_count:
+            for data in DEMO_REPORTS:
+                db.add(ComplianceReport(organisation_id=org.id, generated_by_id=users_by_email["compliance@mdmis.rw"].id, **data))
+            print(f"Seeded {len(DEMO_REPORTS)} compliance report(s).")
+
+        # ---- Safety -----------------------------------------------------------
+        incident_count = await db.scalar(select(func.count(SafetyIncident.id)).where(SafetyIncident.organisation_id == org.id))
+        if not incident_count:
+            for data in DEMO_INCIDENTS:
+                reporter = users_by_email[data["reporter_email"]]
+                acknowledger_email = data.get("acknowledger_email")
+                site = await db.get(Site, data["site_id"])
+                reported_at = datetime.now(timezone.utc) - timedelta(hours=9)
+                incident = SafetyIncident(
+                    organisation_id=org.id, site_id=data["site_id"], incident_type=data["incident_type"],
+                    risk_score=data["risk_score"], status=data["status"], description=data["description"],
+                    reported_by_id=reporter.id, sensor_readings=data["sensor_readings"],
+                    gps_lat=site.lat if site else None, gps_lng=site.lng if site else None, created_at=reported_at,
+                )
+                db.add(incident)
+                await db.flush()
+                db.add(IncidentEvent(incident_id=incident.id, event_type="reported", note=data["description"],
+                                     actor_id=reporter.id, actor_name=reporter.full_name, created_at=reported_at))
+                if acknowledger_email:
+                    ack = users_by_email[acknowledger_email]
+                    incident.acknowledged_by_id = ack.id
+                    incident.acknowledged_at = reported_at + timedelta(minutes=25)
+                    db.add(IncidentEvent(incident_id=incident.id, event_type="acknowledged", actor_id=ack.id,
+                                         actor_name=ack.full_name, created_at=incident.acknowledged_at))
+                if data["status"] == "resolved":
+                    incident.resolved_by_id = ack.id
+                    incident.resolved_at = reported_at + timedelta(hours=2)
+                    db.add(IncidentEvent(incident_id=incident.id, event_type="resolved", actor_id=ack.id,
+                                         actor_name=ack.full_name, created_at=incident.resolved_at,
+                                         note="Ventilation fan restarted; CO2 back under threshold for 60 min."))
+            print(f"Seeded {len(DEMO_INCIDENTS)} safety incident(s).")
+        else:
+            # Older seeds stored no readings or position — fill those in.
+            for data in DEMO_INCIDENTS:
+                rows = (await db.execute(select(SafetyIncident).where(
+                    SafetyIncident.organisation_id == org.id, SafetyIncident.site_id == data["site_id"],
+                    SafetyIncident.incident_type == data["incident_type"],
+                ))).scalars().all()
+                for inc in rows:
+                    if not inc.sensor_readings:
+                        inc.sensor_readings = data["sensor_readings"]
+                    if inc.gps_lat is None:
+                        site = await db.get(Site, inc.site_id)
+                        if site:
+                            inc.gps_lat, inc.gps_lng = site.lat, site.lng
+
+        await seed_sensor_demo(db, org, users_by_email)
 
         await db.commit()
         print(f"Seed complete. Password for {DEMO_USERS[0][0]}: {DEMO_USERS[0][3]}")

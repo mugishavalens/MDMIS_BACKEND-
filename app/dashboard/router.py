@@ -5,11 +5,20 @@ domains don't import each other's models: a dashboard/reporting layer
 inherently needs to read across domains. It only ever runs SELECT
 queries against other domains' tables — it never writes to them and
 never imports their routers/business logic.
+
+Perf note: against Neon from far away, each round trip is ~300ms, so
+query COUNT dominates, not per-query work. Concurrent sessions
+(asyncio.gather, one AsyncSessionLocal() each) was tried and made things
+WORSE — N new connection setups in parallel cost more than N queries in
+sequence on one already-open connection. So this endpoint runs exactly 3
+queries on the single shared session: all headline counts in one SELECT,
+the raw zone rows, and every domain's recent activity in one UNION ALL.
 """
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, literal, select, true, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.models import User
@@ -37,165 +46,165 @@ def _org_scope(query, model, user: User):
     return query.where(model.organisation_id == user.organisation_id)
 
 
+def _zone_aggregates(rows, trend_cutoff: datetime):
+    """avg confidence, mineral distribution, and the monthly trend all come
+    from ONE raw fetch of MineralZone rows, aggregated here in Python —
+    they have different filter windows (confidence/distribution are
+    all-time, trend is cutoff-limited) so they can't share a single SQL
+    GROUP BY, but at demo/dev scale one round trip + cheap Python
+    aggregation beats 3 separate round trips to Neon."""
+    if not rows:
+        return 0.0, [], []
+
+    avg_confidence = sum(r.confidence_score for r in rows) / len(rows)
+
+    mineral_counts: dict[str, int] = {}
+    for r in rows:
+        mineral_counts[r.mineral_type] = mineral_counts.get(r.mineral_type, 0) + 1
+    mineral_distribution = [
+        MineralDistributionPoint(mineral=mineral.capitalize(), detections=count)
+        for mineral, count in sorted(mineral_counts.items(), key=lambda kv: kv[1], reverse=True)
+    ]
+
+    month_buckets: dict[str, list[int]] = {}
+    for r in rows:
+        if r.created_at < trend_cutoff:
+            continue
+        key = r.created_at.strftime("%Y-%m")
+        month_buckets.setdefault(key, []).append(r.confidence_score)
+    monthly_trend = [
+        MonthlyTrendPoint(
+            month=datetime.strptime(key, "%Y-%m").strftime("%b"),
+            detections=len(scores),
+            confidence=round(sum(scores) / len(scores), 1),
+        )
+        for key, scores in sorted(month_buckets.items())
+    ]
+
+    return round(avg_confidence, 1), mineral_distribution, monthly_trend
+
+
+def _activity_item(r) -> ActivityItem:
+    # Normalise the id to the dashed UUID form regardless of how the
+    # dialect stored it (native UUID on Postgres, hex CHAR(32) on SQLite).
+    item_id = str(uuid.UUID(r.id))
+    if r.kind == "scan":
+        title, detail = f"Scan session at {r.a}", f"{r.c} zone(s) · {r.b}"
+    elif r.kind == "trace":
+        title, detail = f"Custody event: {r.a}", f"{r.b or 'Unknown'} → {r.c or 'Unknown'}"
+    elif r.kind == "shipment":
+        title, detail = f"Shipment to {r.a}", f"{r.b} · driver {r.c or 'unassigned'}"
+    elif r.kind == "compliance":
+        title, detail = r.a, f"{r.b.upper()} · {r.c}"
+    else:  # alert
+        title, detail = f"{r.a.replace('_', ' ').title()} incident", r.b or f"Risk score {r.c}"
+    return ActivityItem(id=f"{r.kind}-{item_id}", kind=r.kind, title=title, detail=detail, timestamp=r.ts)
+
+
 @router.get("/summary", response_model=DashboardSummary)
 async def get_summary(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     trend_cutoff = now - timedelta(days=30 * _TREND_MONTHS)
 
-    active_sites = await db.scalar(
-        _org_scope(select(func.count(Site.id)).where(Site.status == "active"), Site, user)
-    )
-    total_sites = await db.scalar(_org_scope(select(func.count(Site.id)), Site, user))
-    flagged_sites = await db.scalar(
-        _org_scope(select(func.count(Site.id)).where(Site.status == "flagged"), Site, user)
-    )
-    scans_today = await db.scalar(
-        _org_scope(
-            select(func.count(ScanSession.id)).where(ScanSession.uploaded_at >= today_start),
-            ScanSession,
-            user,
-        )
-    )
-    avg_confidence = await db.scalar(
-        _org_scope(select(func.avg(MineralZone.confidence_score)), MineralZone, user)
-    )
-    estimated_reserve = await db.scalar(
-        _org_scope(select(func.sum(Site.estimated_tonnage)), Site, user)
-    )
-
-    total_batches = await db.scalar(_org_scope(select(func.count(MineralBatch.id)), MineralBatch, user))
-    compliant_batches = await db.scalar(
-        _org_scope(select(func.count(MineralBatch.id)).where(MineralBatch.compliant.is_(True)), MineralBatch, user)
-    )
-    compliant_pct = (compliant_batches / total_batches * 100) if total_batches else 0.0
-
-    # ── Monthly detection trend (last N months) ────────────────────────────
-    month_col = func.date_trunc("month", MineralZone.created_at)
-    trend_query = _org_scope(
+    # ── Query 1: every headline count, as 1-row subqueries cross-joined ──
+    site_sub = _org_scope(
         select(
-            month_col.label("month"),
-            func.count(MineralZone.id).label("detections"),
-            func.avg(MineralZone.confidence_score).label("confidence"),
-        ).where(MineralZone.created_at >= trend_cutoff),
-        MineralZone,
+            func.count(Site.id).label("total"),
+            func.count(Site.id).filter(Site.status == "active").label("active"),
+            func.count(Site.id).filter(Site.status == "flagged").label("flagged"),
+            func.sum(Site.estimated_tonnage).label("reserve"),
+        ),
+        Site,
         user,
-    ).group_by(month_col).order_by(month_col)
-    trend_rows = (await db.execute(trend_query)).all()
-    monthly_trend = [
-        MonthlyTrendPoint(
-            month=row.month.strftime("%b"),
-            detections=row.detections,
-            confidence=round(float(row.confidence or 0), 1),
-        )
-        for row in trend_rows
-    ]
-
-    # ── Mineral distribution ────────────────────────────────────────────────
-    mineral_query = _org_scope(
-        select(MineralZone.mineral_type, func.count(MineralZone.id))
-        .group_by(MineralZone.mineral_type)
-        .order_by(func.count(MineralZone.id).desc()),
-        MineralZone,
+    ).subquery()
+    scans_sub = _org_scope(
+        select(func.count(ScanSession.id).label("scans_today")).where(ScanSession.uploaded_at >= today_start),
+        ScanSession,
         user,
-    )
-    mineral_rows = (await db.execute(mineral_query)).all()
-    mineral_distribution = [
-        MineralDistributionPoint(mineral=mineral.capitalize(), detections=count)
-        for mineral, count in mineral_rows
-    ]
-
-    # ── Recent activity: read-time merge across every domain's own rows ────
-    activity: list[ActivityItem] = []
-
-    scan_rows = (
+    ).subquery()
+    batch_sub = _org_scope(
+        select(
+            func.count(MineralBatch.id).label("batch_total"),
+            func.count(MineralBatch.id).filter(MineralBatch.compliant.is_(True)).label("batch_compliant"),
+        ),
+        MineralBatch,
+        user,
+    ).subquery()
+    stats = (
         await db.execute(
-            _org_scope(select(ScanSession), ScanSession, user)
-            .order_by(ScanSession.uploaded_at.desc())
-            .limit(_RECENT_PER_DOMAIN)
+            select(site_sub, scans_sub, batch_sub).select_from(
+                site_sub.join(scans_sub, true()).join(batch_sub, true())
+            )
         )
-    ).scalars().all()
-    for s in scan_rows:
-        activity.append(ActivityItem(
-            id=f"scan-{s.id}",
-            kind="scan",
-            title=f"Scan session at {s.site_id}",
-            detail=f"{len(s.zones)} zone(s) · {s.status}",
-            timestamp=s.uploaded_at,
-        ))
+    ).one()
+    compliant_pct = (stats.batch_compliant / stats.batch_total * 100) if stats.batch_total else 0.0
 
-    custody_query = select(CustodyEvent).join(MineralBatch)
+    # ── Query 2: raw zone rows feeding avg confidence + distribution + trend ──
+    zone_rows = (
+        await db.execute(
+            _org_scope(
+                select(MineralZone.mineral_type, MineralZone.confidence_score, MineralZone.created_at),
+                MineralZone,
+                user,
+            )
+        )
+    ).all()
+    avg_confidence, mineral_distribution, monthly_trend = _zone_aggregates(zone_rows, trend_cutoff)
+
+    # ── Query 3: recent activity from every domain in one UNION ALL ──
+    # Each branch projects the same (kind, id, a, b, c, ts) shape; a/b/c are
+    # whatever that domain's title/detail need, formatted below in Python.
+    def _branch(kind, model, a, b, c, ts, query=None):
+        q = query if query is not None else _org_scope(select(), model, user)
+        return q.add_columns(
+            literal(kind).label("kind"),
+            cast(model.id, String).label("id"),
+            cast(a, String).label("a"),
+            cast(b, String).label("b"),
+            cast(c, String).label("c"),
+            ts.label("ts"),
+        ).select_from(model).order_by(ts.desc()).limit(_RECENT_PER_DOMAIN).subquery()
+
+    zone_count = (
+        select(func.count(MineralZone.id))
+        .where(MineralZone.scan_session_id == ScanSession.id)
+        .correlate(ScanSession)
+        .scalar_subquery()
+    )
+    custody_query = select().join_from(CustodyEvent, MineralBatch)
     if user.role != "system_admin":
         custody_query = custody_query.where(MineralBatch.organisation_id == user.organisation_id)
-    custody_rows = (
-        await db.execute(custody_query.order_by(CustodyEvent.timestamp.desc()).limit(_RECENT_PER_DOMAIN))
-    ).scalars().all()
-    for ev in custody_rows:
-        activity.append(ActivityItem(
-            id=f"trace-{ev.id}",
-            kind="trace",
-            title=f"Custody event: {ev.event_type}",
-            detail=f"{ev.from_party or 'Unknown'} → {ev.to_party or 'Unknown'}",
-            timestamp=ev.timestamp,
-        ))
 
-    shipment_rows = (
-        await db.execute(
-            _org_scope(select(Shipment), Shipment, user)
-            .order_by(Shipment.updated_at.desc())
-            .limit(_RECENT_PER_DOMAIN)
-        )
-    ).scalars().all()
-    for sh in shipment_rows:
-        activity.append(ActivityItem(
-            id=f"shipment-{sh.id}",
-            kind="shipment",
-            title=f"Shipment to {sh.destination_name}",
-            detail=f"{sh.status} · driver {sh.driver or 'unassigned'}",
-            timestamp=sh.updated_at,
-        ))
+    branches = [
+        _branch("scan", ScanSession, ScanSession.site_id, ScanSession.status, zone_count, ScanSession.uploaded_at),
+        _branch("trace", CustodyEvent, CustodyEvent.event_type, CustodyEvent.from_party, CustodyEvent.to_party,
+                CustodyEvent.timestamp, query=custody_query),
+        _branch("shipment", Shipment, Shipment.destination_name, Shipment.status, Shipment.driver, Shipment.updated_at),
+        _branch("compliance", ComplianceReport, ComplianceReport.title, ComplianceReport.framework,
+                ComplianceReport.status, ComplianceReport.created_at),
+        _branch("alert", SafetyIncident, SafetyIncident.incident_type, SafetyIncident.description,
+                SafetyIncident.risk_score, SafetyIncident.created_at),
+    ]
+    activity_rows = (await db.execute(union_all(*(select(b) for b in branches)))).all()
 
-    report_rows = (
-        await db.execute(
-            _org_scope(select(ComplianceReport), ComplianceReport, user)
-            .order_by(ComplianceReport.created_at.desc())
-            .limit(_RECENT_PER_DOMAIN)
-        )
-    ).scalars().all()
-    for r in report_rows:
-        activity.append(ActivityItem(
-            id=f"compliance-{r.id}",
-            kind="compliance",
-            title=r.title,
-            detail=f"{r.framework.upper()} · {r.status}",
-            timestamp=r.created_at,
-        ))
+    # UNION ALL row order isn't guaranteed; put rows back in domain order
+    # (newest first within each) so the stable timestamp sort below breaks
+    # ties exactly as a per-domain fetch would.
+    domain_rank = {"scan": 0, "trace": 1, "shipment": 2, "compliance": 3, "alert": 4}
+    activity_rows = sorted(activity_rows, key=lambda r: r.ts, reverse=True)
+    activity_rows.sort(key=lambda r: domain_rank[r.kind])
 
-    incident_rows = (
-        await db.execute(
-            _org_scope(select(SafetyIncident), SafetyIncident, user)
-            .order_by(SafetyIncident.created_at.desc())
-            .limit(_RECENT_PER_DOMAIN)
-        )
-    ).scalars().all()
-    for i in incident_rows:
-        activity.append(ActivityItem(
-            id=f"alert-{i.id}",
-            kind="alert",
-            title=f"{i.incident_type.replace('_', ' ').title()} incident",
-            detail=i.description or f"Risk score {i.risk_score}",
-            timestamp=i.created_at,
-        ))
-
+    activity = [_activity_item(r) for r in activity_rows]
     activity.sort(key=lambda a: a.timestamp, reverse=True)
 
     return DashboardSummary(
-        activeSites=active_sites or 0,
-        totalSites=total_sites or 0,
-        flaggedSites=flagged_sites or 0,
-        scansToday=scans_today or 0,
-        avgConfidence=round(float(avg_confidence or 0), 1),
-        estimatedReserveTonnes=int(estimated_reserve or 0),
+        activeSites=stats.active or 0,
+        totalSites=stats.total or 0,
+        flaggedSites=stats.flagged or 0,
+        scansToday=stats.scans_today or 0,
+        avgConfidence=avg_confidence,
+        estimatedReserveTonnes=int(stats.reserve or 0),
         compliantLotsPct=round(compliant_pct, 1),
         monthlyTrend=monthly_trend,
         mineralDistribution=mineral_distribution,

@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     debug: bool = True
     database_url: str = "sqlite+aiosqlite:///./db.sqlite3"
     cors_allowed_origins: str = "http://localhost:3000"
+    # Optional regex for origins that can't be listed up front, e.g. Vercel
+    # preview deployments (a new URL per deploy). Empty = exact list only.
+    cors_allowed_origin_regex: str = ""
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30
 
@@ -21,6 +24,21 @@ class Settings(BaseSettings):
     email_from_name: str = "MDMIS"
 
     otp_expire_minutes: int = 10
+
+    # Sensor file storage (REQ-ING-007). "local" writes under storage_dir —
+    # fine for development, but Render's disk is wiped on every deploy, so
+    # production should use "s3" (AWS S3 or any S3-compatible store such as
+    # Cloudflare R2, via s3_endpoint_url).
+    storage_backend: str = "local"
+    storage_dir: str = "storage"
+    s3_bucket: str = ""
+    s3_endpoint_url: str = ""
+    s3_region: str = "auto"
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    # SRS allows 10 GB via resumable multipart; single-request uploads are
+    # capped lower until resumable upload is implemented.
+    max_upload_mb: int = 500
     invitation_expire_days: int = 7
 
     # mdmis-ml-service (separate repo/process). ml_service_api_key must
@@ -33,7 +51,9 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
+        # Browsers send Origin without a trailing slash; strip any pasted one
+        # so "https://app.example.com/" still matches.
+        return [o.strip().rstrip("/") for o in self.cors_allowed_origins.split(",") if o.strip().rstrip("/")]
 
     @property
     def sqlalchemy_url_and_connect_args(self) -> tuple[str, dict]:
