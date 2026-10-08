@@ -43,6 +43,8 @@ KIND_LABEL = {
 }
 
 MIN_BYTES = 64
+# A single survey covers at most a satellite tile (~1°); wider means stray points.
+MAX_SURVEY_SPAN_DEG = 5.0
 _LAT_NAMES = {"lat", "latitude", "y", "lat_dd", "gps_lat"}
 _LON_NAMES = {"lon", "lng", "long", "longitude", "x", "lon_dd", "gps_lng", "gps_lon"}
 _MAX_TABLE_BYTES = 200 * 1024 * 1024
@@ -107,6 +109,11 @@ def validate_sensor_file(
         else:
             r.fail("geospatial", "No survey area (bounding box) found in the file.",
                    "Enter the survey area's min/max latitude and longitude with the upload.")
+    if r.ok and r.bbox is not None:
+        span = max(r.bbox[2] - r.bbox[0], r.bbox[3] - r.bbox[1])
+        if span > MAX_SURVEY_SPAN_DEG:
+            r.fail("geospatial", f"Survey points are spread over ~{span * 111:,.0f} km — some coordinates are wrong.",
+                   "Remove the stray points (e.g. run tools/prepare_dataset.py) and upload again.")
     return r
 
 
