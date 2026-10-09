@@ -24,6 +24,7 @@ class SiteOut(BaseModel):
     lastScan: Optional[datetime] = Field(default=None, validation_alias="last_scan")
     lastScanMethod: str = Field(default="", validation_alias="last_scan_method")
     depthMeters: int = Field(validation_alias="depth_meters")
+    dataSource: str = Field(default="", validation_alias="data_source")
 
 
 class SiteCreate(BaseModel):
@@ -44,6 +45,7 @@ class SiteCreate(BaseModel):
     last_scan: Optional[datetime] = None
     last_scan_method: str = ""
     depth_meters: int = 0
+    data_source: str = ""
 
 
 class SiteUpdate(BaseModel):
@@ -62,3 +64,4 @@ class SiteUpdate(BaseModel):
     last_scan: Optional[datetime] = None
     last_scan_method: Optional[str] = None
     depth_meters: Optional[int] = None
+    data_source: Optional[str] = None

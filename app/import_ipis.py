@@ -54,6 +54,7 @@ def _norm(name: str) -> str:
     "cassiterite" whatever encoding the name arrived in."""
     return unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().strip().lower()
 STATE_FORCES = ("FARDC", "PNC", "Police")
+DATA_SOURCE = "IPIS open data (ODC-BY 1.0)"
 PROVINCE_CODES = {"Nord-Kivu": "NK", "Sud-Kivu": "SK", "Ituri": "IT", "Maniema": "MN", "Tanganyika": "TG"}
 
 
@@ -144,6 +145,7 @@ async def import_sites(rows: list[dict], province: str, org_slug: str) -> None:
                 secondary_minerals=r["minerals"][1:],
                 risk_level=_risk(r),
                 status="active",
+                data_source=DATA_SOURCE,
             )
             site = await db.get(Site, site_id)
             if site is None:
