@@ -44,6 +44,10 @@ class Site(Base):
     last_scan: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_scan_method: Mapped[str] = mapped_column(String(50), default="")
     depth_meters: Mapped[int] = mapped_column(default=0)
+    # Attribution for sites imported from outside data (e.g. "IPIS open data
+    # (ODC-BY 1.0)"). Licences like ODC-BY require the credit wherever the
+    # site is shown, so the frontend displays it. Empty for MDMIS's own sites.
+    data_source: Mapped[str] = mapped_column(String(200), default="", server_default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

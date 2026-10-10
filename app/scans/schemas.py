@@ -25,6 +25,7 @@ class MineralZoneOut(BaseModel):
     estimatedTonnage: Optional[float] = Field(default=None, validation_alias="estimated_tonnage")
     status: str
     flaggedAnomaly: bool = Field(validation_alias="flagged_anomaly")
+    modelVersion: Optional[str] = Field(default=None, validation_alias="model_version")
     created_at: datetime
 
 
@@ -78,3 +79,24 @@ class ScanSessionCreate(BaseModel):
 class ScanSessionUpdate(BaseModel):
     status: Optional[str] = None
     processed_at: Optional[datetime] = None
+
+
+class ScanClassifyRequest(BaseModel):
+    """Body for POST /scans/{id}/classify — a raw spectral reading (Raman
+    shift + intensity for the 'lab' sensor type; other sensor types aren't
+    supported by the ML service yet)."""
+
+    x_values: list[float] = Field(min_length=10)
+    intensities: list[float] = Field(min_length=10)
+    sensor_type: str = "lab"
+
+
+class RetrainDataItem(BaseModel):
+    """One row of GET /scans/retrain-data — a lab_confirmed MineralZone
+    paired with the spectrum its ScanSession stored, for the ML service's
+    scripts/retrain.py to consume."""
+
+    zone_id: UUID
+    mineral_type: str
+    x_values: list[float]
+    intensities: list[float]
