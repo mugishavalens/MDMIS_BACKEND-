@@ -57,6 +57,31 @@ All use password `demo1234`:
 - `geo@mdmis.rw` — geologist
 - `compliance@mdmis.rw` — compliance_manager
 
+## Preparing external datasets
+
+Datasets downloaded from Kaggle, open-data portals or survey exports usually
+carry extra columns, other units and bad rows. `tools/prepare_dataset.py`
+filters them down to exactly what MDMIS ingests — deterministically, with a
+reason for every dropped row:
+
+```bash
+pip install -r requirements-dev.txt          # pandas + openpyxl (dev only)
+python tools/prepare_dataset.py --list-targets
+python tools/prepare_dataset.py survey.csv --target magnetometer
+python tools/prepare_dataset.py assays.xlsx --target lab --region none
+python tools/prepare_dataset.py data.csv --target gamma --map th_ppm=eTh_value
+```
+
+Targets: `magnetometer`, `gamma`, `em`, `lab` (element ppm, converts ppb/%
+and oxide grades such as SnO2 / Ta2O5 / WO3 / Li2O), `occurrences` (keeps only
+minerals MDMIS tracks), `gas` and `geotechnical` (also writes ready-to-POST
+`/api/ingest/readings` JSON). Points outside Rwanda are dropped unless
+`--region none` or a custom `min_lat,min_lon,max_lat,max_lon` is given.
+
+Each run writes `<name>.mdmis-<target>.csv` (upload it on Sensor Data →
+Path 1), `<name>.rejected.csv` (every dropped row + reason) and
+`<name>.report.json` (column mapping, conversions, counts per rule).
+
 ## API docs
 
 With the server running: `http://localhost:8000/docs` (Swagger UI) or

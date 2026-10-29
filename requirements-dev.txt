@@ -1,0 +1,4 @@
+# Developer tools only (not installed on the server).
+-r requirements.txt
+pandas>=2.2,<3
+openpyxl>=3.1,<4
