@@ -13,7 +13,7 @@ from app.audit.service import log_event
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, require_org_admin
-from app.email import send_email
+from app.email import EmailDeliveryError, send_email
 from app.security import (
     create_access_token,
     create_refresh_token,
@@ -73,20 +73,31 @@ def _user_out(user: User) -> UserOut:
     )
 
 
+_EMAIL_FAILED = "We couldn't send the verification email right now. Please try again in a few minutes."
+
+
 async def _issue_otp(user: User, db: AsyncSession) -> None:
+    """Sends a fresh verification code, then commits. The email goes out
+    BEFORE the commit: if delivery fails everything is rolled back, so a
+    failed registration never leaves an account behind that can't be verified."""
     code = generate_otp()
     user.mfa_code_hash = hash_otp(code)
     user.mfa_code_expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.otp_expire_minutes)
     user.mfa_attempts = 0
+    await db.flush()
+    try:
+        await send_email(
+            user.email,
+            "Your MDMIS verification code",
+            f"<p>Hi {user.full_name},</p>"
+            f"<p>Your MDMIS verification code is:</p>"
+            f"<p style='font-size:28px;font-weight:700;letter-spacing:4px'>{code}</p>"
+            f"<p>It expires in {settings.otp_expire_minutes} minutes. If you didn't request this, ignore this email.</p>",
+        )
+    except EmailDeliveryError:
+        await db.rollback()
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _EMAIL_FAILED)
     await db.commit()
-    await send_email(
-        user.email,
-        "Your MDMIS verification code",
-        f"<p>Hi {user.full_name},</p>"
-        f"<p>Your MDMIS verification code is:</p>"
-        f"<p style='font-size:28px;font-weight:700;letter-spacing:4px'>{code}</p>"
-        f"<p>It expires in {settings.otp_expire_minutes} minutes. If you didn't request this, ignore this email.</p>",
-    )
 
 
 @router.post("/register/", status_code=status.HTTP_201_CREATED, response_model=VerificationRequiredOut)
@@ -96,6 +107,14 @@ async def register(payload: RegisterIn, db: AsyncSession = Depends(get_db)):
     account and hands back tokens. Teammates are invited afterwards."""
     email = payload.email.lower()
     existing = await db.scalar(select(User).where(User.email == email))
+    if existing and not existing.is_email_verified:
+        # Registered before but never verified (e.g. the code email didn't
+        # arrive). Don't change the password here — that would let anyone
+        # hijack a pending sign-up; sign-in re-sends the code instead.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This email is already registered but not verified yet. Sign in with your password and we'll send you a new code.",
+        )
     if existing:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "An account with this email already exists.")
 
@@ -331,19 +350,26 @@ async def create_invitation(
     db.add(invite)
     await db.flush()  # populate invite.id (default=uuid.uuid4 applies at flush, not construction)
     await log_event(db, user, "invite.create", "invitation", str(invite.id), f"Invited {email} as {payload.role}")
-    await db.commit()
-    await db.refresh(invite)
 
+    # Send before committing: if the email fails, no invitation is recorded
+    # that the invitee never received.
     org_name = user.organisation.name if user.organisation else "MDMIS"
     link = f"{settings.frontend_url}/accept-invite?token={invite.token}"
-    await send_email(
-        invite.email,
-        f"You're invited to join {org_name} on MDMIS",
-        f"<p>{user.full_name} invited you to join <b>{org_name}</b> on MDMIS as "
-        f"<b>{payload.role.replace('_', ' ').title()}</b>.</p>"
-        f"<p><a href='{link}'>Accept invitation</a></p>"
-        f"<p>This link expires in {settings.invitation_expire_days} days.</p>",
-    )
+    try:
+        await send_email(
+            invite.email,
+            f"You're invited to join {org_name} on MDMIS",
+            f"<p>{user.full_name} invited you to join <b>{org_name}</b> on MDMIS as "
+            f"<b>{payload.role.replace('_', ' ').title()}</b>.</p>"
+            f"<p><a href='{link}'>Accept invitation</a></p>"
+            f"<p>This link expires in {settings.invitation_expire_days} days.</p>",
+        )
+    except EmailDeliveryError:
+        await db.rollback()
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "We couldn't send the invitation email right now. Please try again in a few minutes.")
+    await db.commit()
+    await db.refresh(invite)
     return invite
 
 
