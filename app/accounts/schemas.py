@@ -29,9 +29,6 @@ class VerificationRequiredOut(BaseModel):
 
     verification_required: bool = True
     email: str
-    # Only set while email sending is off (no SENDGRID_API_KEY): the code
-    # is handed back here so it can be copied from the browser's Network tab.
-    dev_code: str | None = None
 
 
 class VerifyOtpIn(BaseModel):
@@ -90,8 +87,6 @@ class InvitationOut(BaseModel):
     status: str
     expires_at: datetime
     created_at: datetime
-    # Only set on creation while email sending is off — see VerificationRequiredOut.dev_code.
-    dev_invite_link: str | None = None
 
     model_config = {"from_attributes": True}
 

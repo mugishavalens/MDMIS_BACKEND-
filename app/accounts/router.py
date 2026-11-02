@@ -76,11 +76,10 @@ def _user_out(user: User) -> UserOut:
 _EMAIL_FAILED = "We couldn't send the verification email right now. Please try again in a few minutes."
 
 
-async def _issue_otp(user: User, db: AsyncSession) -> str | None:
+async def _issue_otp(user: User, db: AsyncSession) -> None:
     """Sends a fresh verification code, then commits. The email goes out
     BEFORE the commit: if delivery fails everything is rolled back, so a
-    failed registration never leaves an account behind that can't be verified.
-    Returns the code itself only while email sending is off, for dev_code."""
+    failed registration never leaves an account behind that can't be verified."""
     code = generate_otp()
     user.mfa_code_hash = hash_otp(code)
     user.mfa_code_expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.otp_expire_minutes)
@@ -99,7 +98,6 @@ async def _issue_otp(user: User, db: AsyncSession) -> str | None:
         await db.rollback()
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _EMAIL_FAILED)
     await db.commit()
-    return None if settings.email_enabled else code
 
 
 @router.post("/register/", status_code=status.HTTP_201_CREATED, response_model=VerificationRequiredOut)
@@ -143,8 +141,8 @@ async def register(payload: RegisterIn, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.flush()
 
-    dev_code = await _issue_otp(user, db)
-    return VerificationRequiredOut(email=user.email, dev_code=dev_code)
+    await _issue_otp(user, db)
+    return VerificationRequiredOut(email=user.email)
 
 
 @router.post("/login/", response_model=Union[TokenOut, VerificationRequiredOut])
@@ -158,8 +156,8 @@ async def login(payload: LoginIn, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid email or password.")
 
     if not user.is_active:
-        dev_code = await _issue_otp(user, db)
-        return VerificationRequiredOut(email=user.email, dev_code=dev_code)
+        await _issue_otp(user, db)
+        return VerificationRequiredOut(email=user.email)
 
     return TokenOut(
         access=create_access_token(str(user.id)),
@@ -202,8 +200,9 @@ async def verify_otp_endpoint(payload: VerifyOtpIn, db: AsyncSession = Depends(g
 async def resend_otp(payload: ResendOtpIn, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == payload.email.lower()))
     user = result.scalar_one_or_none()
-    dev_code = await _issue_otp(user, db) if user else None
-    return {"detail": "If that account exists, a new code was sent.", "dev_code": dev_code}
+    if user:
+        await _issue_otp(user, db)
+    return {"detail": "If that account exists, a new code was sent."}
 
 
 @router.post("/refresh/", response_model=AccessTokenOut)
@@ -308,8 +307,8 @@ async def accept_invite(payload: AcceptInviteIn, db: AsyncSession = Depends(get_
     invite.accepted_at = datetime.now(timezone.utc)
     await db.flush()
 
-    dev_code = await _issue_otp(user, db)
-    return VerificationRequiredOut(email=user.email, dev_code=dev_code)
+    await _issue_otp(user, db)
+    return VerificationRequiredOut(email=user.email)
 
 
 @accounts_router.get("/users/", response_model=list[UserOut])
@@ -371,10 +370,7 @@ async def create_invitation(
                             "We couldn't send the invitation email right now. Please try again in a few minutes.")
     await db.commit()
     await db.refresh(invite)
-    out = InvitationOut.model_validate(invite)
-    if not settings.email_enabled:
-        out.dev_invite_link = link
-    return out
+    return invite
 
 
 @accounts_router.get("/invitations/", response_model=list[InvitationOut])
