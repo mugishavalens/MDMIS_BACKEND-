@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     @property
+    def email_enabled(self) -> bool:
+        return bool(self.sendgrid_api_key)
+
+    @property
     def cors_origins_list(self) -> list[str]:
         # Browsers send Origin without a trailing slash; strip any pasted one
         # so "https://app.example.com/" still matches.
