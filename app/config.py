@@ -17,9 +17,9 @@ class Settings(BaseSettings):
     # Frontend origin used to build invite-acceptance links in emails.
     frontend_url: str = "http://localhost:3000"
 
-    # SendGrid — leave sendgrid_api_key empty in dev; send_email() then just
-    # logs the email to the console instead of calling the SendGrid API.
-    sendgrid_api_key: str = ""
+    # Brevo — leave brevo_api_key empty in dev; send_email() then just
+    # logs the email to the console instead of calling the Brevo API.
+    brevo_api_key: str = ""
     email_from: str = "no-reply@mdmis.rw"
     email_from_name: str = "MDMIS"
 
