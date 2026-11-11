@@ -53,3 +53,26 @@ class Site(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class SiteTerrain(Base):
+    """The 3D block's ground surface for one site, in the frontend's DemGrid
+    shape (row 0 = south, col 0 = west; see the frontend's lib/dem-fetcher.ts).
+
+    Produced by mdmis-ml-service (scripts/ingest_terrain.py: Copernicus DEM
+    or a drone survey) and stored here, so serving the 3D block needs only
+    the backend and its database. Before this table the backend proxied
+    every request to the ML service, which the deployed app can't reach.
+    Load with: python -m app.import_terrain --dir <mdmis-ml-service>/data/terrain
+    """
+
+    __tablename__ = "site_terrains"
+
+    site_id: Mapped[str] = mapped_column(String(32), ForeignKey("sites.id", ondelete="CASCADE"), primary_key=True)
+    grid: Mapped[dict] = mapped_column(JSON)
+    # e.g. "Copernicus GLO-30 DSM" — shown under the block so viewers know
+    # what the surface is (a DSM measures canopy height over forest).
+    source: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
