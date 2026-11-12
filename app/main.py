@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.accounts.router import accounts_router, router as auth_router
@@ -13,7 +13,38 @@ from app.sites.router import router as sites_router
 from app.traceability.router import batch_router, custody_event_router
 from app.transport.router import driver_router, router as transport_router, vehicle_router
 
-app = FastAPI(title="MDMIS Backend", version="1.0.0")
+settings.check_production_secrets()
+
+app = FastAPI(
+    title="MDMIS Backend",
+    version="1.0.0",
+    # The API docs list every route and schema; off in production unless
+    # API_DOCS_ENABLED=true.
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
+)
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+    # JSON and file downloads only: nothing here should ever run as a page.
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    "Cache-Control": "no-store",
+}
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        # /docs serves an HTML page with scripts; leave its CSP alone.
+        if name == "Content-Security-Policy" and request.url.path in ("/docs", "/redoc"):
+            continue
+        response.headers.setdefault(name, value)
+    return response
 
 app.add_middleware(
     CORSMiddleware,

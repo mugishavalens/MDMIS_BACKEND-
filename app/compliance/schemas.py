@@ -1,9 +1,14 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from .models import FRAMEWORK_CHOICES, REPORT_STATUS_CHOICES
+
+Framework = Literal[FRAMEWORK_CHOICES]
+ReportStatus = Literal[REPORT_STATUS_CHOICES]
 
 
 class ComplianceReportOut(BaseModel):
@@ -23,16 +28,16 @@ class ComplianceReportOut(BaseModel):
 
 class ComplianceReportCreate(BaseModel):
     title: str
-    framework: str
+    framework: Framework
     period: str
-    status: str = "draft"
+    status: ReportStatus = "draft"
     coverage_pct: Decimal = Decimal("0")
     flagged_lots: int = 0
     submitted_to: str = ""
 
 
 class ComplianceReportUpdate(BaseModel):
-    status: Optional[str] = None
+    status: Optional[ReportStatus] = None
     coverage_pct: Optional[Decimal] = None
     flagged_lots: Optional[int] = None
     submitted_to: Optional[str] = None

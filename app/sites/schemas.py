@@ -1,8 +1,16 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from .models import MINERAL_CHOICES, RISK_CHOICES, STATUS_CHOICES
+
+Mineral = Literal[MINERAL_CHOICES]
+Risk = Literal[RISK_CHOICES]
+SiteStatus = Literal[STATUS_CHOICES]
+# Site ids appear in URLs and terrain folder names: keep them plain.
+SITE_ID_PATTERN = r"^[A-Za-z0-9_-]{1,32}$"
 
 
 class SiteOut(BaseModel):
@@ -28,20 +36,20 @@ class SiteOut(BaseModel):
 
 
 class SiteCreate(BaseModel):
-    id: str
+    id: str = Field(pattern=SITE_ID_PATTERN)
     name: str
     district: str = ""
-    country_code: str = "RW"
+    country_code: str = Field(default="RW", pattern=r"^[A-Z]{2}$")
     lat: float
     lng: float
-    primary_mineral: str
-    secondary_minerals: list = []
+    primary_mineral: Mineral
+    secondary_minerals: list[Mineral] = []
     grade_pct: Decimal = Decimal("0")
     confidence: Decimal = Decimal("0")
     estimated_tonnage: int = 0
     safety_score: int = 0
-    risk_level: str = "low"
-    status: str = "active"
+    risk_level: Risk = "low"
+    status: SiteStatus = "active"
     last_scan: Optional[datetime] = None
     last_scan_method: str = ""
     depth_meters: int = 0
@@ -53,14 +61,14 @@ class SiteUpdate(BaseModel):
     district: Optional[str] = None
     lat: Optional[Decimal] = None
     lng: Optional[Decimal] = None
-    primary_mineral: Optional[str] = None
-    secondary_minerals: Optional[list] = None
+    primary_mineral: Optional[Mineral] = None
+    secondary_minerals: Optional[list[Mineral]] = None
     grade_pct: Optional[Decimal] = None
     confidence: Optional[Decimal] = None
     estimated_tonnage: Optional[int] = None
     safety_score: Optional[int] = None
-    risk_level: Optional[str] = None
-    status: Optional[str] = None
+    risk_level: Optional[Risk] = None
+    status: Optional[SiteStatus] = None
     last_scan: Optional[datetime] = None
     last_scan_method: Optional[str] = None
     depth_meters: Optional[int] = None

@@ -1,9 +1,17 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.sites.models import MINERAL_CHOICES
+
+from .models import BATCH_STATUS_CHOICES, CUSTODY_EVENT_CHOICES
+
+Mineral = Literal[MINERAL_CHOICES]
+BatchStatus = Literal[BATCH_STATUS_CHOICES]
+CustodyEventType = Literal[CUSTODY_EVENT_CHOICES]
 
 
 class CustodyEventOut(BaseModel):
@@ -24,7 +32,7 @@ class CustodyEventOut(BaseModel):
 
 class CustodyEventCreate(BaseModel):
     batch_id: UUID
-    event_type: str
+    event_type: CustodyEventType
     from_party: str = ""
     to_party: str = ""
     gps_lat: Optional[Decimal] = None
@@ -60,21 +68,21 @@ class MineralBatchOut(BaseModel):
 
 class MineralBatchCreate(BaseModel):
     site_id: str
-    mineral_type: str
+    mineral_type: Mineral
     origin_lat: Optional[Decimal] = None
     origin_lng: Optional[Decimal] = None
     extraction_timestamp: Optional[datetime] = None
     weight_kg: Decimal = Decimal("0")
     grade_detected: Optional[Decimal] = None
     grade_confirmed: Optional[Decimal] = None
-    status: str = "scanned"
+    status: BatchStatus = "scanned"
     qr_code_url: str = ""
 
 
 class MineralBatchUpdate(BaseModel):
     grade_detected: Optional[Decimal] = None
     grade_confirmed: Optional[Decimal] = None
-    status: Optional[str] = None
+    status: Optional[BatchStatus] = None
     qr_code_url: Optional[str] = None
     compliant: Optional[bool] = None
     compliance_note: Optional[str] = None

@@ -1,6 +1,8 @@
 import time
+from datetime import timezone
 
 from sqlalchemy import event, exc
+from sqlalchemy.dialects.sqlite import DATETIME as SQLITE_DATETIME
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -34,6 +36,40 @@ engine = create_async_engine(
     pool_recycle=300,
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+
+class _UTCSQLiteDateTime(SQLITE_DATETIME):
+    """SQLite has no time-zone type: DateTime(timezone=True) columns come
+    back naive there, while Postgres returns them aware. Code comparing them
+    with datetime.now(timezone.utc) then crashes ("can't subtract
+    offset-naive and offset-aware datetimes") on the local SQLite fallback
+    only. Every datetime column here is timezone=True and stored as UTC, so
+    on SQLite: write aware values converted to UTC, read values back as UTC."""
+
+    def bind_processor(self, dialect):
+        process = super().bind_processor(dialect)
+
+        def bind(value):
+            if value is not None and value.tzinfo is not None:
+                value = value.astimezone(timezone.utc).replace(tzinfo=None)
+            return process(value) if process else value
+        return bind
+
+    def result_processor(self, dialect, coltype):
+        process = super().result_processor(dialect, coltype)
+
+        def result(value):
+            value = process(value) if process else value
+            if value is not None and value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value
+        return result
+
+
+if engine.dialect.name == "sqlite":
+    from sqlalchemy import types as sqltypes
+
+    engine.sync_engine.dialect.colspecs = {**engine.sync_engine.dialect.colspecs, sqltypes.DateTime: _UTCSQLiteDateTime}
 
 
 @event.listens_for(engine.sync_engine, "connect")

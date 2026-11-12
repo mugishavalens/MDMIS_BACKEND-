@@ -8,7 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.accounts.models import User
 from app.audit.service import log_event
 from app.database import get_db
+from app.authz import COMPLIANCE_EDITORS, TRACE_EDITORS, check_role, get_owned
 from app.deps import get_current_user
+from app.sites.models import Site
 
 from .models import CustodyEvent, MineralBatch
 from .schemas import CustodyEventCreate, CustodyEventOut, MineralBatchCreate, MineralBatchOut, MineralBatchUpdate
@@ -46,6 +48,8 @@ async def create_batch(
 ):
     """REQ-TRACE-001: system-generated, permanent coc_id:
     COC-{SITE_CODE}-{YYYYMMDD}-{SEQUENCE}."""
+    check_role(user, TRACE_EDITORS, "create mineral batches")
+    site = await get_owned(db, Site, payload.site_id, user, "Site")
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
     prefix = f"COC-{payload.site_id}-{today}"
     count = await db.scalar(
@@ -56,7 +60,7 @@ async def create_batch(
     batch = MineralBatch(
         **payload.model_dump(),
         coc_id=coc_id,
-        organisation_id=user.organisation_id,
+        organisation_id=site.organisation_id,
         created_by_id=user.id,
     )
     db.add(batch)
@@ -75,6 +79,9 @@ async def get_batch(batch_id: UUID, db: AsyncSession = Depends(get_db), user: Us
     return _build_batch_out(obj)
 
 
+_COMPLIANCE_FIELDS = {"compliant", "compliance_note"}
+
+
 @batch_router.patch("/{batch_id}", response_model=MineralBatchOut)
 async def update_batch(
     batch_id: UUID,
@@ -88,6 +95,12 @@ async def update_batch(
     if obj is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
     updates = payload.model_dump(exclude_unset=True)
+    # The compliance verdict is the compliance team's call; grades and
+    # handling status are operations'. A user may need both roles' rights.
+    if _COMPLIANCE_FIELDS & updates.keys():
+        check_role(user, COMPLIANCE_EDITORS, "set a batch's compliance status")
+    if updates.keys() - _COMPLIANCE_FIELDS:
+        check_role(user, TRACE_EDITORS, "edit mineral batches")
     for field, value in updates.items():
         setattr(obj, field, value)
     if updates.get("compliant") is False:
@@ -116,6 +129,7 @@ async def list_custody_events(db: AsyncSession = Depends(get_db), user: User = D
 async def create_custody_event(
     payload: CustodyEventCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
 ):
+    check_role(user, TRACE_EDITORS, "record custody events")
     batch = (
         await db.execute(_scope_batches(select(MineralBatch).where(MineralBatch.id == payload.batch_id), user))
     ).scalar_one_or_none()

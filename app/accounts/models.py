@@ -73,6 +73,9 @@ class User(Base):
     mfa_code_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     mfa_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     mfa_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Stamped into every token as "ver"; bumping it (password change or
+    # reset, logout) invalidates every token issued before.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
