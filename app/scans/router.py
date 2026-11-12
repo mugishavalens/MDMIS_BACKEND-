@@ -9,7 +9,9 @@ from app.accounts.models import User
 from app.config import settings
 from app.crud import org_scoped_crud_router
 from app.database import get_db
+from app.authz import DELETERS, LAB_CONFIRMERS, SCAN_EDITORS, check_role, get_owned
 from app.deps import get_current_user, require_service_key
+from app.sites.models import Site
 
 from .models import MineralZone, ScanSession
 from .schemas import (
@@ -23,6 +25,13 @@ from .schemas import (
     ScanSessionUpdate,
 )
 
+def _zone_status_check(data: dict, user: User) -> None:
+    """lab_confirmed zones are training ground truth for the ML model
+    (GET /scans/retrain-data), so setting it is a geologist's call."""
+    if data.get("status") == "lab_confirmed":
+        check_role(user, LAB_CONFIRMERS, "mark a zone lab-confirmed")
+
+
 mineral_zone_router = org_scoped_crud_router(
     model=MineralZone,
     out_schema=MineralZoneOut,
@@ -33,6 +42,10 @@ mineral_zone_router = org_scoped_crud_router(
     # /scans/zones since both match "/scans/<one segment>".
     prefix="/mineral-zones",
     tags=["scans"],
+    write_roles=SCAN_EDITORS,
+    delete_roles=DELETERS,
+    parents={"scan_session_id": (ScanSession, "Scan session")},
+    check=_zone_status_check,
 )
 
 # scan_session_router is hand-written rather than the generic CRUD factory
@@ -65,19 +78,28 @@ async def list_scan_sessions(db: AsyncSession = Depends(get_db), user: User = De
 )
 async def get_retrain_data(db: AsyncSession = Depends(get_db)):
     """Pulled by mdmis-ml-service's scripts/retrain.py: every lab_confirmed
-    MineralZone paired with the spectrum its ScanSession stored. Not
-    org-scoped (service-key auth, not a per-user JWT) — the ML model is
-    trained across every organisation's confirmed labels, same as the
-    public seed dataset it started from.
+    MineralZone paired with the spectrum its ScanSession stored, from the
+    organisations listed in TRAINING_ORG_IDS only (empty = none).
+    Service-key auth, not a per-user JWT.
 
     Registered before GET /{item_id} on purpose: FastAPI/Starlette tries
     routes in registration order, and a plain "{item_id}" path segment
     would otherwise match the literal string "retrain-data" first and fail
     UUID validation instead of falling through to this route."""
+    # Any organisation can self-register and lab-confirm its own zones, so
+    # pooling every org's labels would let one account poison the shared
+    # model. Only organisations listed in TRAINING_ORG_IDS contribute.
+    trusted = settings.training_org_id_list
+    if not trusted:
+        return []
     query = (
         select(MineralZone, ScanSession)
         .join(ScanSession, MineralZone.scan_session_id == ScanSession.id)
-        .where(MineralZone.status == "lab_confirmed", ScanSession.raw_reading.is_not(None))
+        .where(
+            MineralZone.status == "lab_confirmed",
+            ScanSession.raw_reading.is_not(None),
+            MineralZone.organisation_id.in_(trusted),
+        )
     )
     rows = (await db.execute(query)).all()
     return [
@@ -108,7 +130,9 @@ async def get_scan_session(item_id: UUID, db: AsyncSession = Depends(get_db), us
 async def create_scan_session(
     payload: ScanSessionCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    session = ScanSession(**payload.model_dump(), organisation_id=user.organisation_id, operator_id=user.id)
+    check_role(user, SCAN_EDITORS, "create scan sessions")
+    site = await get_owned(db, Site, payload.site_id, user, "Site")
+    session = ScanSession(**payload.model_dump(), organisation_id=site.organisation_id, operator_id=user.id)
     db.add(session)
     await db.commit()
     await db.refresh(session, attribute_names=["zones"])
@@ -122,6 +146,7 @@ async def update_scan_session(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    check_role(user, SCAN_EDITORS, "edit scan sessions")
     obj = (await db.execute(_scope(select(ScanSession).where(ScanSession.id == item_id), user))).scalar_one_or_none()
     if obj is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
@@ -135,6 +160,7 @@ async def update_scan_session(
 
 @scan_session_router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_scan_session(item_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    check_role(user, DELETERS, "delete scan sessions")
     obj = (await db.execute(_scope(select(ScanSession).where(ScanSession.id == item_id), user))).scalar_one_or_none()
     if obj is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
@@ -154,6 +180,7 @@ async def classify_scan_session(
     MineralZone. Synchronous (not a background job) — a RandomForest
     inference over a ~200-point spectrum is a few milliseconds, so there's
     no long-running work to hide behind BackgroundTasks here."""
+    check_role(user, SCAN_EDITORS, "classify scans")
     session = (
         await db.execute(_scope(select(ScanSession).where(ScanSession.id == item_id), user))
     ).scalar_one_or_none()

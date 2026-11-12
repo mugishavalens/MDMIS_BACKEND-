@@ -1,3 +1,4 @@
+from app.authz import COMPLIANCE_EDITORS, DELETERS
 from app.crud import org_scoped_crud_router
 
 from .models import ComplianceReport
@@ -17,4 +18,6 @@ router = org_scoped_crud_router(
     prefix="/compliance",
     tags=["compliance"],
     on_create=_stamp_generator,
+    write_roles=COMPLIANCE_EDITORS,
+    delete_roles=DELETERS,
 )

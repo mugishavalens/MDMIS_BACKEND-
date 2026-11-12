@@ -1,3 +1,4 @@
+import hmac
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, status
@@ -35,7 +36,7 @@ async def get_current_user(
     user_id = payload.get("sub")
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or payload.get("ver", 0) != user.token_version:
         raise _CREDENTIALS_EXCEPTION
     return user
 
@@ -58,7 +59,11 @@ async def require_service_key(x_ml_service_key: str = Header(...)) -> None:
     """Gate for endpoints called by mdmis-ml-service rather than a logged-in
     user (e.g. the retrain-data pull) — checked against a shared secret
     instead of a JWT, since there's no User row for the ML service."""
-    if x_ml_service_key != settings.ml_service_api_key:
+    # Constant-time compare; and the published default key never works
+    # outside local SQLite development.
+    if not settings.ml_service_key_usable or not hmac.compare_digest(
+        x_ml_service_key.encode(), settings.ml_service_api_key.encode()
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid service key.")
 
 

@@ -1,20 +1,23 @@
 import base64
 import binascii
+import html
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Union
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from slugify import slugify
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import ratelimit
 from app.audit.service import log_event
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, require_org_admin
 from app.email import EmailDeliveryError, send_email
 from app.security import (
+    DUMMY_PASSWORD_HASH,
     create_access_token,
     create_refresh_token,
     decode_token,
@@ -36,9 +39,12 @@ from .schemas import (
     InvitationOut,
     InviteDetailOut,
     LoginIn,
+    ForgotPasswordIn,
+    PasswordChangedOut,
     RefreshIn,
     RegisterIn,
     ResendOtpIn,
+    ResetPasswordIn,
     TokenOut,
     UserOut,
     VerificationRequiredOut,
@@ -76,21 +82,37 @@ def _user_out(user: User) -> UserOut:
 _EMAIL_FAILED = "We couldn't send the verification email right now. Please try again in a few minutes."
 
 
-async def _issue_otp(user: User, db: AsyncSession) -> None:
+def _tokens(user: User) -> dict:
+    return {
+        "access": create_access_token(str(user.id), user.token_version),
+        "refresh": create_refresh_token(str(user.id), user.token_version),
+    }
+
+
+def _limit_code_email(email: str, request: Request) -> None:
+    """Every code request sends a real email: cap per address and per IP
+    (email bombing, and guessing codes by requesting endless new ones)."""
+    ratelimit.code_emails.hit(email)
+    ratelimit.code_emails_per_ip.hit(ratelimit.client_ip(request))
+
+
+async def _issue_otp(user: User, db: AsyncSession, purpose: str = "verify") -> None:
     """Sends a fresh verification code, then commits. The email goes out
     BEFORE the commit: if delivery fails everything is rolled back, so a
-    failed registration never leaves an account behind that can't be verified."""
+    failed registration never leaves an account behind that can't be verified.
+    Callers rate-limit first (_limit_code_email)."""
     code = generate_otp()
     user.mfa_code_hash = hash_otp(code)
     user.mfa_code_expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.otp_expire_minutes)
     user.mfa_attempts = 0
     await db.flush()
     try:
+        reset = purpose == "reset"
         await send_email(
             user.email,
-            "Your MDMIS verification code",
-            f"<p>Hi {user.full_name},</p>"
-            f"<p>Your MDMIS verification code is:</p>"
+            "Your MDMIS password reset code" if reset else "Your MDMIS verification code",
+            f"<p>Hi {html.escape(user.full_name)},</p>"
+            f"<p>Your MDMIS {'password reset' if reset else 'verification'} code is:</p>"
             f"<p style='font-size:28px;font-weight:700;letter-spacing:4px'>{code}</p>"
             f"<p>It expires in {settings.otp_expire_minutes} minutes. If you didn't request this, ignore this email.</p>",
         )
@@ -101,10 +123,11 @@ async def _issue_otp(user: User, db: AsyncSession) -> None:
 
 
 @router.post("/register/", status_code=status.HTTP_201_CREATED, response_model=VerificationRequiredOut)
-async def register(payload: RegisterIn, db: AsyncSession = Depends(get_db)):
+async def register(payload: RegisterIn, request: Request, db: AsyncSession = Depends(get_db)):
     """Creates an Organisation + its org_admin, inactive until the emailed
     code is confirmed via /auth/verify-otp/ — that's what activates the
     account and hands back tokens. Teammates are invited afterwards."""
+    ratelimit.registrations_per_ip.hit(ratelimit.client_ip(request))
     email = payload.email.lower()
     existing = await db.scalar(select(User).where(User.email == email))
     if existing and not existing.is_email_verified:
@@ -141,79 +164,138 @@ async def register(payload: RegisterIn, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.flush()
 
+    _limit_code_email(email, request)
     await _issue_otp(user, db)
     return VerificationRequiredOut(email=user.email)
 
 
 @router.post("/login/", response_model=Union[TokenOut, VerificationRequiredOut])
-async def login(payload: LoginIn, db: AsyncSession = Depends(get_db)):
+async def login(payload: LoginIn, request: Request, db: AsyncSession = Depends(get_db)):
     """Plain password login — email verification happens once, at account
     creation (register/accept-invite), not on every sign-in. The only time
-    this re-triggers a code is if someone never finished verifying."""
-    result = await db.execute(select(User).where(User.email == payload.email.lower()))
-    user = result.scalar_one_or_none()
-    if not user or not verify_password(payload.password, user.password_hash):
+    this re-triggers a code is if someone never finished verifying.
+
+    5 wrong passwords for an account pause it for 15 minutes; an unknown
+    email is checked against a dummy hash so timing doesn't reveal which
+    addresses have accounts."""
+    email = payload.email.lower()
+    ratelimit.login_per_ip.hit(ratelimit.client_ip(request))
+    ratelimit.login_failures.check(email)
+    user = await db.scalar(select(User).where(User.email == email))
+    password_ok = verify_password(payload.password, user.password_hash if user else DUMMY_PASSWORD_HASH)
+    if user is None or not password_ok:
+        ratelimit.login_failures.hit(email)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid email or password.")
+    ratelimit.login_failures.reset(email)
 
     if not user.is_active:
+        _limit_code_email(email, request)
         await _issue_otp(user, db)
         return VerificationRequiredOut(email=user.email)
 
-    return TokenOut(
-        access=create_access_token(str(user.id)),
-        refresh=create_refresh_token(str(user.id)),
-        user=_user_out(user),
-    )
+    return TokenOut(**_tokens(user), user=_user_out(user))
 
 
-@router.post("/verify-otp/", response_model=TokenOut)
-async def verify_otp_endpoint(payload: VerifyOtpIn, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == payload.email.lower()))
-    user = result.scalar_one_or_none()
+async def _consume_code(db: AsyncSession, email: str, code: str) -> User:
+    """Checks a code sent by email; on success clears it and returns the
+    user. Limited to 5 guesses per code and 10 per account per 15 minutes."""
+    ratelimit.code_checks.hit(email)
+    user = await db.scalar(select(User).where(User.email == email))
     if not user or not user.mfa_code_hash or not user.mfa_code_expires_at:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No verification in progress. Please sign in again.")
     if datetime.now(timezone.utc) > _aware(user.mfa_code_expires_at):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Code expired. Please request a new one.")
     if user.mfa_attempts >= MAX_OTP_ATTEMPTS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Too many attempts. Please request a new code.")
-
-    if not verify_otp(payload.code, user.mfa_code_hash):
+    if not verify_otp(code, user.mfa_code_hash):
         user.mfa_attempts += 1
         await db.commit()
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid code.")
-
     user.mfa_code_hash = None
     user.mfa_code_expires_at = None
     user.mfa_attempts = 0
+    return user
+
+
+@router.post("/verify-otp/", response_model=TokenOut)
+async def verify_otp_endpoint(payload: VerifyOtpIn, db: AsyncSession = Depends(get_db)):
+    """Finishes sign-up for an account that hasn't verified its email yet.
+    Not a sign-in method for verified accounts: a code alone (no password)
+    must never open an account that's already set up. Forgotten passwords
+    go through /forgot-password/ + /reset-password/."""
+    email = payload.email.lower()
+    user = await db.scalar(select(User).where(User.email == email))
+    if user is not None and user.is_email_verified and user.is_active:
+        ratelimit.code_checks.hit(email)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No verification in progress. Please sign in again.")
+    user = await _consume_code(db, email, payload.code)
     user.is_active = True
     user.is_email_verified = True
     await db.commit()
-
-    return TokenOut(
-        access=create_access_token(str(user.id)),
-        refresh=create_refresh_token(str(user.id)),
-        user=_user_out(user),
-    )
+    return TokenOut(**_tokens(user), user=_user_out(user))
 
 
 @router.post("/resend-otp/")
-async def resend_otp(payload: ResendOtpIn, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == payload.email.lower()))
-    user = result.scalar_one_or_none()
-    if user:
+async def resend_otp(payload: ResendOtpIn, request: Request, db: AsyncSession = Depends(get_db)):
+    email = payload.email.lower()
+    _limit_code_email(email, request)
+    user = await db.scalar(select(User).where(User.email == email))
+    # Only accounts still finishing sign-up get a code here.
+    if user and not user.is_email_verified:
         await _issue_otp(user, db)
     return {"detail": "If that account exists, a new code was sent."}
 
 
+@router.post("/forgot-password/")
+async def forgot_password(payload: ForgotPasswordIn, request: Request, db: AsyncSession = Depends(get_db)):
+    """Emails a reset code. Same answer whether or not the account exists."""
+    email = payload.email.lower()
+    _limit_code_email(email, request)
+    user = await db.scalar(select(User).where(User.email == email))
+    if user:
+        await _issue_otp(user, db, purpose="reset")
+    return {"detail": "If that account exists, a reset code was sent."}
+
+
+@router.post("/reset-password/", response_model=TokenOut)
+async def reset_password(payload: ResetPasswordIn, db: AsyncSession = Depends(get_db)):
+    """Sets a new password with a code from /forgot-password/. Proving the
+    email also completes sign-up for an unverified account (so an address
+    someone else registered first can be reclaimed by its real owner), and
+    ends every existing session."""
+    user = await _consume_code(db, payload.email.lower(), payload.code)
+    user.password_hash = hash_password(payload.new_password)
+    user.token_version += 1
+    user.is_active = True
+    user.is_email_verified = True
+    await log_event(db, user, "account.password_reset", "user", str(user.id), "Reset password by email code")
+    await db.commit()
+    return TokenOut(**_tokens(user), user=_user_out(user))
+
+
 @router.post("/refresh/", response_model=AccessTokenOut)
-async def refresh(payload: RefreshIn):
+async def refresh(payload: RefreshIn, db: AsyncSession = Depends(get_db)):
     try:
         data = decode_token(payload.refresh)
+        user_id = uuid.UUID(str(data.get("sub")))
     except Exception:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired refresh token.")
     if data.get("type") != "refresh":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token type.")
-    return AccessTokenOut(access=create_access_token(data["sub"]))
+    user = await db.scalar(select(User).where(User.id == user_id))
+    # A deactivated account, or one whose sessions were ended (password
+    # change/reset, logout), gets no new access tokens.
+    if user is None or not user.is_active or data.get("ver", 0) != user.token_version:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session ended. Please sign in again.")
+    return AccessTokenOut(access=create_access_token(str(user.id), user.token_version))
+
+
+@router.post("/logout/", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Ends every session of this account (all devices): tokens are
+    stateless, so the only way to cancel one is to bump the version."""
+    current_user.token_version += 1
+    await db.commit()
 
 
 @router.get("/me/", response_model=UserOut)
@@ -258,7 +340,7 @@ async def remove_avatar(db: AsyncSession = Depends(get_db), current_user: User =
     return _user_out(current_user)
 
 
-@router.post("/change-password/", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/change-password/", response_model=PasswordChangedOut)
 async def change_password(
     payload: ChangePasswordIn,
     db: AsyncSession = Depends(get_db),
@@ -269,12 +351,17 @@ async def change_password(
     if payload.new_password == payload.current_password:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "New password must be different from the current one.")
     current_user.password_hash = hash_password(payload.new_password)
+    # Signs out every other session (e.g. a stolen token); this one gets
+    # fresh tokens back.
+    current_user.token_version += 1
     await log_event(db, current_user, "account.password_change", "user", str(current_user.id), "Changed own password")
     await db.commit()
+    return PasswordChangedOut(**_tokens(current_user))
 
 
 @router.get("/invitations/{token}/", response_model=InviteDetailOut)
-async def get_invitation(token: str, db: AsyncSession = Depends(get_db)):
+async def get_invitation(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    ratelimit.invite_lookups_per_ip.hit(ratelimit.client_ip(request))
     invite = await db.scalar(select(Invitation).where(Invitation.token == token))
     if not invite:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found.")
@@ -285,7 +372,8 @@ async def get_invitation(token: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/accept-invite/", status_code=status.HTTP_201_CREATED, response_model=VerificationRequiredOut)
-async def accept_invite(payload: AcceptInviteIn, db: AsyncSession = Depends(get_db)):
+async def accept_invite(payload: AcceptInviteIn, request: Request, db: AsyncSession = Depends(get_db)):
+    ratelimit.registrations_per_ip.hit(ratelimit.client_ip(request))
     invite = await db.scalar(select(Invitation).where(Invitation.token == payload.token))
     if not invite or invite.status != "pending" or _aware(invite.expires_at) < datetime.now(timezone.utc):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This invitation is invalid or has expired.")
@@ -307,6 +395,7 @@ async def accept_invite(payload: AcceptInviteIn, db: AsyncSession = Depends(get_
     invite.accepted_at = datetime.now(timezone.utc)
     await db.flush()
 
+    _limit_code_email(user.email, request)
     await _issue_otp(user, db)
     return VerificationRequiredOut(email=user.email)
 
@@ -359,9 +448,9 @@ async def create_invitation(
         await send_email(
             invite.email,
             f"You're invited to join {org_name} on MDMIS",
-            f"<p>{user.full_name} invited you to join <b>{org_name}</b> on MDMIS as "
+            f"<p>{html.escape(user.full_name)} invited you to join <b>{html.escape(org_name)}</b> on MDMIS as "
             f"<b>{payload.role.replace('_', ' ').title()}</b>.</p>"
-            f"<p><a href='{link}'>Accept invitation</a></p>"
+            f"<p><a href='{html.escape(link)}'>Accept invitation</a></p>"
             f"<p>This link expires in {settings.invitation_expire_days} days.</p>",
         )
     except EmailDeliveryError:

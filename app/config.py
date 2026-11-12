@@ -1,10 +1,21 @@
+import logging
+import uuid
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_DEFAULT_SECRET_KEY = "dev-insecure-secret-key-change-me"
+_DEFAULT_ML_SERVICE_KEY = "dev-insecure-ml-service-key-change-me"
+
+
+def _is_placeholder(value: str) -> bool:
+    """The code defaults and .env.example placeholders all contain change-me."""
+    return "change-me" in value
+
+
 class Settings(BaseSettings):
-    secret_key: str = "dev-insecure-secret-key-change-me"
+    secret_key: str = _DEFAULT_SECRET_KEY
     debug: bool = True
     database_url: str = "sqlite+aiosqlite:///./db.sqlite3"
     cors_allowed_origins: str = "http://localhost:3000"
@@ -45,9 +56,53 @@ class Settings(BaseSettings):
     # match that service's own SERVICE_API_KEY — it's the shared secret
     # both directions of backend<->ML-service traffic use.
     ml_service_url: str = "http://localhost:8100"
-    ml_service_api_key: str = "dev-insecure-ml-service-key-change-me"
+    ml_service_api_key: str = _DEFAULT_ML_SERVICE_KEY
+
+    # Organisations whose lab_confirmed zones may train the shared ML model
+    # (comma-separated UUIDs). Empty = none: any organisation can sign up
+    # and confirm its own zones, so training data is opt-in per org.
+    training_org_ids: str = ""
+
+    # /docs, /redoc and /openapi.json. Unset = on for local SQLite
+    # development, off in production.
+    api_docs_enabled: bool | None = None
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+
+    @property
+    def is_production(self) -> bool:
+        """Anything but the local SQLite fallback is treated as a real
+        deployment (Neon on Render)."""
+        return not self.database_url.startswith("sqlite")
+
+    @property
+    def ml_service_key_usable(self) -> bool:
+        return not (self.is_production and _is_placeholder(self.ml_service_api_key))
+
+    @property
+    def docs_enabled(self) -> bool:
+        return self.api_docs_enabled if self.api_docs_enabled is not None else not self.is_production
+
+    @property
+    def training_org_id_list(self) -> list[uuid.UUID]:
+        return [uuid.UUID(v.strip()) for v in self.training_org_ids.split(",") if v.strip()]
+
+    def check_production_secrets(self) -> None:
+        """Refuse to start a deployment that signs tokens with the published
+        default secret: anyone could forge a login for any account."""
+        if not self.is_production:
+            return
+        if _is_placeholder(self.secret_key):
+            raise RuntimeError(
+                "SECRET_KEY is a published placeholder. Set it to a long random value, e.g. "
+                "python -c \"import secrets; print(secrets.token_urlsafe(48))\"."
+            )
+        if len(self.secret_key) < 32:
+            logging.getLogger("mdmis").warning("SECRET_KEY is shorter than 32 characters; use a longer random value.")
+        if _is_placeholder(self.ml_service_api_key):
+            logging.getLogger("mdmis").warning(
+                "ML_SERVICE_API_KEY is a published placeholder: service-key endpoints are disabled until it's set."
+            )
 
     @property
     def cors_origins_list(self) -> list[str]:

@@ -100,6 +100,52 @@ Each run writes `<name>.mdmis-<target>.csv` (upload it on Sensor Data →
 Path 1), `<name>.rejected.csv` (every dropped row + reason) and
 `<name>.report.json` (column mapping, conversions, counts per rule).
 
+## Security model
+
+**Organisations are isolated.** Every read is scoped to the caller's
+organisation (system_admin sees all). Every write that points at another
+record (a site, scan session, batch, zone) is checked to belong to the
+caller's organisation too: otherwise 404, same as "doesn't exist".
+
+**Who may change what** (`app/authz.py`, mirroring the frontend's
+`lib/rbac.ts`; system_admin may do everything, every role may read):
+
+| Action | Roles |
+|---|---|
+| Create/edit sites | org_admin, geologist, mine_manager |
+| Create/edit scan sessions and mineral zones, classify | org_admin, geologist, mine_manager |
+| Mark a zone `lab_confirmed` (ML training ground truth) | org_admin, geologist |
+| Create/edit mineral batches, record custody events | org_admin, mine_manager |
+| Set a batch's compliance verdict (`compliant`, `compliance_note`) | org_admin, compliance_manager |
+| Create/edit compliance reports | org_admin, compliance_manager |
+| Report a safety incident | everyone |
+| Edit safety incidents, safety rules, transport, devices | org_admin, mine_manager |
+| Delete anything | org_admin |
+
+Enum-like fields (minerals, statuses, frameworks, incident types) only
+accept the values in each app's `models.py`.
+
+**Sign-in.** 5 wrong passwords pause an account for 15 minutes. Code
+emails (verification, reset) are capped at 3 per address per 15 minutes.
+A code only completes sign-up for an unverified account; a verified
+account that forgot its password uses `POST /auth/forgot-password/` then
+`/auth/reset-password/` (which also lets the real owner reclaim an
+address someone else registered first). Rate limits live in memory
+(`app/ratelimit.py`), which fits the single Render instance.
+
+**Ending sessions.** Tokens carry the user's `token_version`. A password
+change or reset, or `POST /auth/logout/` (signs out every device), bumps
+it and every older token stops working.
+
+**Deployment settings.** The app refuses to start against a real
+database if `SECRET_KEY` is a published placeholder, and service-key
+endpoints stay closed while `ML_SERVICE_API_KEY` is one. API docs are off
+in production (`API_DOCS_ENABLED=true` to override). Only organisations
+listed in `TRAINING_ORG_IDS` feed `GET /scans/retrain-data`.
+
+Regression check: `python tests/test_security.py` replays the
+2026-11-12 audit's attacks against a throwaway database (all PASS).
+
 ## API docs
 
 With the server running: `http://localhost:8000/docs` (Swagger UI) or

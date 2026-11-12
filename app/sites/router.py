@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.models import User
+from app.authz import DELETERS, SITE_EDITORS
 from app.config import settings
 from app.crud import org_scoped_crud_router
 from app.database import get_db
@@ -20,6 +21,8 @@ router = org_scoped_crud_router(
     prefix="/sites",
     tags=["sites"],
     id_type=str,
+    write_roles=SITE_EDITORS,
+    delete_roles=DELETERS,
 )
 
 

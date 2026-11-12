@@ -5,6 +5,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .models import INCIDENT_STATUS_CHOICES, INCIDENT_TYPE_CHOICES
+
+IncidentType = Literal[INCIDENT_TYPE_CHOICES]
+IncidentStatus = Literal[INCIDENT_STATUS_CHOICES]
+
 
 class SafetyIncidentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -53,7 +58,7 @@ class SafetyRuleCreate(BaseModel):
     metric: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_]+$")
     comparator: Literal["gt", "lt"]
     threshold: float
-    incident_type: str = "gas_threshold"
+    incident_type: IncidentType = "gas_threshold"
     risk_score: int = Field(default=70, ge=0, le=100)
 
 
@@ -90,7 +95,7 @@ class IncidentNoteIn(BaseModel):
 class SafetyIncidentCreate(BaseModel):
     site_id: str
     zone_id: Optional[UUID] = None
-    incident_type: str
+    incident_type: IncidentType
     risk_score: int = 0
     sensor_readings: dict = {}
     gps_lat: Optional[Decimal] = None
@@ -99,5 +104,5 @@ class SafetyIncidentCreate(BaseModel):
 
 
 class SafetyIncidentUpdate(BaseModel):
-    status: Optional[str] = None
+    status: Optional[IncidentStatus] = None
     description: Optional[str] = None

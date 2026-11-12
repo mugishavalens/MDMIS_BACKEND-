@@ -1,20 +1,32 @@
 from datetime import datetime
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
 
 from .models import INVITABLE_ROLES
+
+
+def _fits_bcrypt(v: str) -> str:
+    # bcrypt only uses the first 72 bytes; anything longer would silently
+    # be a shorter password than the user thinks.
+    if len(v.encode("utf-8")) > 72:
+        raise ValueError("Password is too long (max 72 bytes).")
+    return v
+
+
+NewPassword = Annotated[str, Field(min_length=8), AfterValidator(_fits_bcrypt)]
+PersonName = Annotated[str, Field(min_length=1, max_length=120)]
 
 
 class RegisterIn(BaseModel):
     """Self-registration always creates a new Organisation + org_admin —
     there is no role field. Teammates are added afterwards via invitations."""
 
-    full_name: str
+    full_name: PersonName
     email: EmailStr
-    password: str = Field(min_length=8)
-    organisation_name: Optional[str] = ""
+    password: NewPassword
+    organisation_name: Optional[str] = Field(default="", max_length=255)
 
 
 class LoginIn(BaseModel):
@@ -100,8 +112,8 @@ class InviteDetailOut(BaseModel):
 
 class AcceptInviteIn(BaseModel):
     token: str
-    full_name: str
-    password: str = Field(min_length=8)
+    full_name: PersonName
+    password: NewPassword
 
 
 class AvatarIn(BaseModel):
@@ -110,4 +122,22 @@ class AvatarIn(BaseModel):
 
 class ChangePasswordIn(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=8)
+    new_password: NewPassword
+
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordIn(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=6)
+    new_password: NewPassword
+
+
+class PasswordChangedOut(BaseModel):
+    """Fresh tokens for the session that changed the password; every other
+    session of the account is ended."""
+
+    access: str
+    refresh: str

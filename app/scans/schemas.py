@@ -1,9 +1,18 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.sites.models import MINERAL_CHOICES
+
+from .models import SCAN_STATUS_CHOICES, SENSOR_CHOICES, ZONE_STATUS_CHOICES
+
+Mineral = Literal[MINERAL_CHOICES]
+ZoneStatus = Literal[ZONE_STATUS_CHOICES]
+ScanStatus = Literal[SCAN_STATUS_CHOICES]
+Sensor = Literal[SENSOR_CHOICES]
 
 
 class ConfidenceAlternative(BaseModel):
@@ -31,14 +40,14 @@ class MineralZoneOut(BaseModel):
 
 class MineralZoneCreate(BaseModel):
     scan_session_id: UUID
-    mineral_type: str
+    mineral_type: Mineral
     confidence_score: int = 0
     confidence_alternatives: list[ConfidenceAlternative] = []
     grade_pct: Optional[Decimal] = None
     area_ha: Optional[Decimal] = None
     estimated_depth_m: Optional[Decimal] = None
     estimated_tonnage: Optional[Decimal] = None
-    status: str = "unconfirmed"
+    status: ZoneStatus = "unconfirmed"
     flagged_anomaly: bool = False
 
 
@@ -49,7 +58,7 @@ class MineralZoneUpdate(BaseModel):
     area_ha: Optional[Decimal] = None
     estimated_depth_m: Optional[Decimal] = None
     estimated_tonnage: Optional[Decimal] = None
-    status: Optional[str] = None
+    status: Optional[ZoneStatus] = None
     flagged_anomaly: Optional[bool] = None
 
 
@@ -72,12 +81,12 @@ class ScanSessionOut(BaseModel):
 
 class ScanSessionCreate(BaseModel):
     site_id: str
-    sensor_types: list = []
-    status: str = "uploaded"
+    sensor_types: list[Sensor] = []
+    status: ScanStatus = "uploaded"
 
 
 class ScanSessionUpdate(BaseModel):
-    status: Optional[str] = None
+    status: Optional[ScanStatus] = None
     processed_at: Optional[datetime] = None
 
 

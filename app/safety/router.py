@@ -9,7 +9,10 @@ from sqlalchemy.orm import aliased
 from app.accounts.models import User
 from app.audit.service import log_event
 from app.database import get_db
+from app.authz import DELETERS, SAFETY_RESPONDERS, check_role, get_owned
 from app.deps import get_current_user, require_role
+from app.scans.models import MineralZone
+from app.sites.models import Site
 
 from .models import IncidentEvent, SafetyIncident, SafetyRule
 from .rules import ensure_default_rules
@@ -142,7 +145,14 @@ async def get_incident(item_id: UUID, db: AsyncSession = Depends(get_db), user: 
 async def create_incident(
     payload: SafetyIncidentCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    incident = SafetyIncident(**payload.model_dump(), organisation_id=user.organisation_id, reported_by_id=user.id)
+    # Every role may report an incident (safety reports shouldn't be gated),
+    # but only on its own organisation's sites and zones.
+    site = await get_owned(db, Site, payload.site_id, user, "Site")
+    if payload.zone_id is not None:
+        zone = await get_owned(db, MineralZone, payload.zone_id, user, "Zone")
+        if zone.organisation_id != site.organisation_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Zone not found.")
+    incident = SafetyIncident(**payload.model_dump(), organisation_id=site.organisation_id, reported_by_id=user.id)
     db.add(incident)
     await db.flush()  # populate incident.id (default=uuid.uuid4 applies at flush, not construction)
     _add_event(db, incident, user, "reported", payload.description)
@@ -159,6 +169,7 @@ async def update_incident(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    check_role(user, SAFETY_RESPONDERS, "edit safety incidents")
     obj = (
         await db.execute(_scope(select(SafetyIncident).where(SafetyIncident.id == item_id), user))
     ).scalar_one_or_none()
@@ -172,6 +183,7 @@ async def update_incident(
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_incident(item_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    check_role(user, DELETERS, "delete safety incidents")
     obj = (
         await db.execute(_scope(select(SafetyIncident).where(SafetyIncident.id == item_id), user))
     ).scalar_one_or_none()
@@ -249,6 +261,8 @@ async def list_rules(db: AsyncSession = Depends(get_db), user: User = Depends(ge
 async def create_rule(payload: SafetyRuleCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_responder)):
     if user.organisation_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Your account has no organisation.")
+    if payload.site_id is not None:
+        await get_owned(db, Site, payload.site_id, user, "Site")
     rule = SafetyRule(**payload.model_dump(), organisation_id=user.organisation_id)
     db.add(rule)
     await log_event(db, user, "safety.rule_create", "safety_rule", "", f"{rule.metric} {rule.comparator} {rule.threshold}")
