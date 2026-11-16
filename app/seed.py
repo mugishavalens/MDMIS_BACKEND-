@@ -324,7 +324,7 @@ async def seed():
             site = await db.get(Site, data["id"])
             last_scan = datetime.fromisoformat(data["last_scan"].replace("Z", "+00:00"))
             if site is None:
-                site = Site(organisation_id=org.id, **{**data, "last_scan": last_scan})
+                site = Site(organisation_id=org.id, is_shared=True, **{**data, "last_scan": last_scan})
                 db.add(site)
                 print(f"Created site: {data['id']}")
             else:

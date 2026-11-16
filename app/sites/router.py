@@ -1,6 +1,6 @@
 import httpx
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.models import User
@@ -23,6 +23,7 @@ router = org_scoped_crud_router(
     id_type=str,
     write_roles=SITE_EDITORS,
     delete_roles=DELETERS,
+    shared_field="is_shared",
 )
 
 
@@ -35,10 +36,11 @@ async def get_site_terrain(site_id: str, db: AsyncSession = Depends(get_db), use
     and store what it returns (handy in local dev, where ingest_terrain.py
     writes to the ML service's folder). The ML service needs
     ML_SERVICE_API_KEY, which must never reach the frontend, and the same
-    org scoping as every other site route applies before anything is read."""
+    org scoping as every other site route applies before anything is read
+    (a shared demo site's block is readable by everyone)."""
     query = select(Site).where(Site.id == site_id)
     if user.role != "system_admin":
-        query = query.where(Site.organisation_id == user.organisation_id)
+        query = query.where(or_(Site.organisation_id == user.organisation_id, Site.is_shared.is_(True)))
     if (await db.execute(query)).scalar_one_or_none() is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
 
