@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Numeric, String, false, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -48,6 +48,10 @@ class Site(Base):
     # (ODC-BY 1.0)"). Licences like ODC-BY require the credit wherever the
     # site is shown, so the frontend displays it. Empty for MDMIS's own sites.
     data_source: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    # Shared sites (the seeded demo sites) are readable, with their 3D
+    # block, by every organisation; only the owning organisation may edit
+    # or delete them, or attach scans, batches or incidents to them.
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

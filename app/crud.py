@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,7 @@ def org_scoped_crud_router(
     delete_roles: tuple[str, ...] = ("org_admin",),
     parents: Optional[dict[str, tuple[Type[Any], str]]] = None,
     check: Optional[Callable[[dict, User], Awaitable[None] | None]] = None,
+    shared_field: Optional[str] = None,
 ) -> APIRouter:
     """Builds list/create/retrieve[/update][/delete] endpoints for `model`,
     scoped to the caller's organisation.
@@ -52,6 +53,8 @@ def org_scoped_crud_router(
     row takes that parent's organisation (so a system_admin's writes land
     in the right org). check(data, user): extra rules on create/update
     data (e.g. who may set a status); raise HTTPException to refuse.
+    shared_field: a boolean column; rows with it set are readable (list,
+    retrieve) by every organisation. Writes stay owner-only.
     """
     router = APIRouter(prefix=prefix, tags=tags)
 
@@ -60,14 +63,20 @@ def org_scoped_crud_router(
             return query
         return query.where(getattr(model, org_field) == user.organisation_id)
 
+    def _read_scope(query, user: User):
+        if user.role == "system_admin" or shared_field is None:
+            return _scope(query, user)
+        return query.where(or_(getattr(model, org_field) == user.organisation_id,
+                               getattr(model, shared_field).is_(True)))
+
     @router.get("/", response_model=list[out_schema])
     async def list_items(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
-        result = await db.execute(_scope(select(model), user))
+        result = await db.execute(_read_scope(select(model), user))
         return result.scalars().all()
 
     @router.get("/{item_id}", response_model=out_schema)
     async def get_item(item_id: id_type, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
-        obj = (await db.execute(_scope(select(model).where(model.id == item_id), user))).scalar_one_or_none()
+        obj = (await db.execute(_read_scope(select(model).where(model.id == item_id), user))).scalar_one_or_none()
         if obj is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
         return obj

@@ -25,7 +25,7 @@ from app.config import settings  # noqa: E402
 from app.database import AsyncSessionLocal, Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.security import create_access_token, create_refresh_token, hash_password  # noqa: E402
-from app.sites.models import Site  # noqa: E402
+from app.sites.models import Site, SiteTerrain  # noqa: E402
 
 ROLES = ("org_admin", "geologist", "compliance_manager", "mine_manager")
 users: dict[str, User] = {}
@@ -47,6 +47,11 @@ async def setup():
                 users[f"{tag}:{role}"] = u
             db.add(Site(id=f"SITE-{tag}", organisation_id=org.id, name=f"Site {tag}", lat=-1.9, lng=30.0,
                         primary_mineral="cassiterite"))
+            if tag == "B":  # a shared demo site, owned by B
+                db.add(Site(id="SITE-SH", organisation_id=org.id, name="Shared demo", lat=-1.9, lng=30.0,
+                            primary_mineral="gold", is_shared=True))
+                await db.flush()
+                db.add(SiteTerrain(site_id="SITE-SH", grid={"rows": 2, "cols": 2, "heights": [0, 1, 2, 3]}))
         admin = User(organisation_id=None, email="root@mdmis.rw", full_name="Root", role="system_admin",
                      password_hash=hash_password("Passw0rd!"), is_active=True, is_email_verified=True)
         db.add(admin)
@@ -233,5 +238,20 @@ missing = [h for h in ("x-content-type-options", "x-frame-options", "strict-tran
 check("security headers present", not missing, ",".join(missing))
 r = c.get("/api/scans/retrain-data", headers={"X-ML-Service-Key": settings.ml_service_api_key})
 check("retrain-data returns nothing until TRAINING_ORG_IDS is set", r.status_code == 200 and r.json() == [], r.status_code)
+
+print("-- shared demo sites --")
+ids = {s["id"] for s in c.get("/api/sites/", headers=A).json()}
+check("other orgs see a shared site, not private ones", "SITE-SH" in ids and "SITE-B" not in ids, sorted(ids))
+r = c.get("/api/sites/SITE-SH", headers=A)
+check("shared site readable by another org", r.status_code == 200 and r.json()["isShared"] is True, r.status_code)
+r = c.get("/api/sites/SITE-SH/terrain", headers=A)
+check("shared site's 3D block terrain readable by another org", r.status_code == 200 and r.json()["rows"] == 2, r.status_code)
+check("private site terrain still hidden", c.get("/api/sites/SITE-B/terrain", headers=A).status_code == 404)
+check("other org can't edit a shared site", c.patch("/api/sites/SITE-SH", json={"name": "x"}, headers=A).status_code == 404)
+check("other org can't delete a shared site", c.delete("/api/sites/SITE-SH", headers=A).status_code == 404)
+check("other org can't attach a scan to a shared site",
+      c.post("/api/scans/", json={"site_id": "SITE-SH"}, headers=A).status_code == 404)
+r = c.patch("/api/sites/SITE-SH", json={"name": "Shared demo site"}, headers=B)
+check("owner can still edit its shared site", r.status_code == 200, r.status_code)
 
 print(f"\n{sum(results)}/{len(results)} passed")

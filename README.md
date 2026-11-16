@@ -106,6 +106,10 @@ Path 1), `<name>.rejected.csv` (every dropped row + reason) and
 organisation (system_admin sees all). Every write that points at another
 record (a site, scan session, batch, zone) is checked to belong to the
 caller's organisation too: otherwise 404, same as "doesn't exist".
+The one exception is **shared sites** (`sites.is_shared`, set for the 10
+seeded demo sites): every organisation can see them and their 3D block,
+read-only. Only the owning organisation can edit or delete them or attach
+scans, batches or incidents.
 
 **Who may change what** (`app/authz.py`, mirroring the frontend's
 `lib/rbac.ts`; system_admin may do everything, every role may read):

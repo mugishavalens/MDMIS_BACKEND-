@@ -33,6 +33,7 @@ class SiteOut(BaseModel):
     lastScanMethod: str = Field(default="", validation_alias="last_scan_method")
     depthMeters: int = Field(validation_alias="depth_meters")
     dataSource: str = Field(default="", validation_alias="data_source")
+    isShared: bool = Field(default=False, validation_alias="is_shared")
 
 
 class SiteCreate(BaseModel):
