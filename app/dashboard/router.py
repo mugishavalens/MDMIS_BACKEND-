@@ -14,6 +14,7 @@ sequence on one already-open connection. So this endpoint runs exactly 3
 queries on the single shared session: all headline counts in one SELECT,
 the raw zone rows, and every domain's recent activity in one UNION ALL.
 """
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -31,7 +32,14 @@ from app.sites.models import Site
 from app.traceability.models import CustodyEvent, MineralBatch
 from app.transport.models import Shipment
 
-from .schemas import ActivityItem, DashboardSummary, MineralDistributionPoint, MonthlyTrendPoint
+from .schemas import (
+    ActivityItem,
+    DashboardSummary,
+    KpiTrends,
+    MineralDistributionPoint,
+    MonthlyTrendPoint,
+    PublicStats,
+)
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -101,11 +109,57 @@ def _activity_item(r) -> ActivityItem:
     return ActivityItem(id=f"{r.kind}-{item_id}", kind=r.kind, title=title, detail=detail, timestamp=r.ts)
 
 
+_PUBLIC_STATS_TTL = 300  # seconds; the landing page needn't be fresher
+_public_stats_cache: tuple[float, PublicStats] | None = None
+
+
+@router.get("/public-stats", response_model=PublicStats)
+async def get_public_stats(db: AsyncSession = Depends(get_db)):
+    """The landing page's headline numbers, across every organisation. No
+    sign-in, so it returns totals only and is cached in memory: anonymous
+    visitors can't drive one Neon round trip each."""
+    global _public_stats_cache
+    if _public_stats_cache and time.monotonic() - _public_stats_cache[0] < _PUBLIC_STATS_TTL:
+        return _public_stats_cache[1]
+
+    site_sub = select(
+        func.count(Site.id).label("total"),
+        func.count(Site.id).filter(Site.status == "active").label("active"),
+        func.count(func.distinct(Site.district)).filter(Site.district != "").label("districts"),
+        func.sum(Site.estimated_tonnage).label("reserve"),
+    ).subquery()
+    zone_sub = select(func.avg(MineralZone.confidence_score).label("avg_confidence")).subquery()
+    batch_sub = select(
+        func.count(MineralBatch.id).label("batch_total"),
+        func.count(MineralBatch.id).filter(MineralBatch.compliant.is_(True)).label("batch_compliant"),
+    ).subquery()
+    s = (
+        await db.execute(
+            select(site_sub, zone_sub, batch_sub).select_from(
+                site_sub.join(zone_sub, true()).join(batch_sub, true())
+            )
+        )
+    ).one()
+
+    stats = PublicStats(
+        activeSites=s.active or 0,
+        totalSites=s.total or 0,
+        districtsCovered=s.districts or 0,
+        avgConfidence=round(float(s.avg_confidence or 0), 1),
+        estimatedReserveTonnes=int(s.reserve or 0),
+        compliantLotsPct=round(s.batch_compliant / s.batch_total * 100, 1) if s.batch_total else 0.0,
+    )
+    _public_stats_cache = (time.monotonic(), stats)
+    return stats
+
+
 @router.get("/summary", response_model=DashboardSummary)
 async def get_summary(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     trend_cutoff = now - timedelta(days=30 * _TREND_MONTHS)
+    # KPI badge windows: this week vs the week before, and the last 30 days.
+    week_ago, two_weeks_ago, month_ago = now - timedelta(days=7), now - timedelta(days=14), now - timedelta(days=30)
 
     # ── Query 1: every headline count, as 1-row subqueries cross-joined ──
     site_sub = _org_scope(
@@ -114,12 +168,19 @@ async def get_summary(db: AsyncSession = Depends(get_db), user: User = Depends(g
             func.count(Site.id).filter(Site.status == "active").label("active"),
             func.count(Site.id).filter(Site.status == "flagged").label("flagged"),
             func.sum(Site.estimated_tonnage).label("reserve"),
+            func.count(Site.id).filter(Site.created_at >= month_ago).label("sites_added_30d"),
         ),
         Site,
         user,
     ).subquery()
     scans_sub = _org_scope(
-        select(func.count(ScanSession.id).label("scans_today")).where(ScanSession.uploaded_at >= today_start),
+        select(
+            func.count(ScanSession.id).filter(ScanSession.uploaded_at >= today_start).label("scans_today"),
+            func.count(ScanSession.id).filter(ScanSession.uploaded_at >= week_ago).label("scans_7d"),
+            func.count(ScanSession.id)
+            .filter(ScanSession.uploaded_at >= two_weeks_ago, ScanSession.uploaded_at < week_ago)
+            .label("scans_prev_7d"),
+        ),
         ScanSession,
         user,
     ).subquery()
@@ -127,6 +188,7 @@ async def get_summary(db: AsyncSession = Depends(get_db), user: User = Depends(g
         select(
             func.count(MineralBatch.id).label("batch_total"),
             func.count(MineralBatch.id).filter(MineralBatch.compliant.is_(True)).label("batch_compliant"),
+            func.count(MineralBatch.id).filter(MineralBatch.compliant.is_(False)).label("batch_noncompliant"),
         ),
         MineralBatch,
         user,
@@ -151,6 +213,7 @@ async def get_summary(db: AsyncSession = Depends(get_db), user: User = Depends(g
         )
     ).all()
     avg_confidence, mineral_distribution, monthly_trend = _zone_aggregates(zone_rows, trend_cutoff)
+    zones_30d = sum(1 for r in zone_rows if r.created_at >= month_ago)
 
     # ── Query 3: recent activity from every domain in one UNION ALL ──
     # Each branch projects the same (kind, id, a, b, c, ts) shape; a/b/c are
@@ -206,6 +269,13 @@ async def get_summary(db: AsyncSession = Depends(get_db), user: User = Depends(g
         avgConfidence=avg_confidence,
         estimatedReserveTonnes=int(stats.reserve or 0),
         compliantLotsPct=round(compliant_pct, 1),
+        trends=KpiTrends(
+            sitesAdded30d=stats.sites_added_30d or 0,
+            scansLast7d=stats.scans_7d or 0,
+            scansPrev7d=stats.scans_prev_7d or 0,
+            zonesDetected30d=zones_30d,
+            nonCompliantLots=stats.batch_noncompliant or 0,
+        ),
         monthlyTrend=monthly_trend,
         mineralDistribution=mineral_distribution,
         activity=activity[:_ACTIVITY_LIMIT],

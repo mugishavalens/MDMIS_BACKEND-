@@ -22,6 +22,28 @@ class ActivityItem(BaseModel):
     timestamp: datetime
 
 
+class KpiTrends(BaseModel):
+    """Real movement behind the KPI cards' badges."""
+
+    sitesAdded30d: int
+    scansLast7d: int
+    scansPrev7d: int
+    zonesDetected30d: int
+    nonCompliantLots: int
+
+
+class PublicStats(BaseModel):
+    """Platform-wide totals for the public landing page: aggregates only,
+    nothing that identifies a site, location or organisation."""
+
+    activeSites: int
+    totalSites: int
+    districtsCovered: int
+    avgConfidence: float
+    estimatedReserveTonnes: int
+    compliantLotsPct: float
+
+
 class DashboardSummary(BaseModel):
     activeSites: int
     totalSites: int
@@ -30,6 +52,7 @@ class DashboardSummary(BaseModel):
     avgConfidence: float
     estimatedReserveTonnes: int
     compliantLotsPct: float
+    trends: KpiTrends
     monthlyTrend: list[MonthlyTrendPoint]
     mineralDistribution: list[MineralDistributionPoint]
     activity: list[ActivityItem]
