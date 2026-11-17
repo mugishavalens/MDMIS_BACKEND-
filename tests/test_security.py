@@ -10,7 +10,9 @@ import uuid
 
 DB = os.path.join(tempfile.mkdtemp(), "audit.db")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{DB}"
-os.environ.pop("BREVO_API_KEY", None)
+# Empty, not unset: an unset variable falls back to .env's real key, which
+# would send real emails and hide the codes this script reads from stdout.
+os.environ["BREVO_API_KEY"] = ""
 sys.path.insert(0, os.getcwd())
 
 import io  # noqa: E402
@@ -226,7 +228,8 @@ try:
     check("production refuses to start with the default SECRET_KEY", False)
 except RuntimeError:
     check("production refuses to start with the default SECRET_KEY", True)
-check("API docs off in production", not type(settings)(database_url="postgresql://x/y").docs_enabled)
+check("API docs off in production",
+      not type(settings)(database_url="postgresql://x/y", api_docs_enabled=None).docs_enabled)
 r = c.get("/api/health")
 missing = [h for h in ("x-content-type-options", "x-frame-options", "strict-transport-security", "content-security-policy")
            if h not in {k.lower() for k in r.headers}]
