@@ -6,6 +6,7 @@ from app.audit.router import router as audit_router
 from app.compliance.router import router as compliance_router
 from app.config import settings
 from app.dashboard.router import router as dashboard_router
+from app.drone_surveys.router import router as drone_surveys_router
 from app.ingestion.router import devices_router, files_router, ingest_router, readings_router
 from app.safety.router import router as safety_router, rules_router as safety_rules_router
 from app.scans.router import mineral_zone_router, scan_session_router
@@ -80,3 +81,4 @@ app.include_router(devices_router, prefix="/api")
 app.include_router(ingest_router, prefix="/api")
 app.include_router(files_router, prefix="/api")
 app.include_router(readings_router, prefix="/api")
+app.include_router(drone_surveys_router, prefix="/api")

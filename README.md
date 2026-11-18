@@ -66,6 +66,18 @@ Run it once per database: locally, and against the deployed database
 the ML service at `ML_SERVICE_URL`, and if that isn't reachable either,
 the route returns 404 and the frontend uses a public elevation API.
 
+## Drone surveys
+
+`POST /api/drone-surveys/` (multipart: `site_id`, `label`, `files`) forwards a
+flight's photos to mdmis-ml-service, which builds the 3D block in the
+background. Polling `GET /api/drone-surveys/{id}` mirrors its progress; the
+poll that sees it finish stores the bare ground, surface, point sample and
+orthophoto, and makes them the site's terrain (`site_terrains`). Upload:
+site editors, own organisation's sites only. Delete: org_admin (the site
+falls back to public elevation data). Needs `ML_SERVICE_URL` and
+`ML_SERVICE_API_KEY`; without a reachable ML service uploads return 503.
+Tests: `python tests/test_drone_surveys.py`.
+
 ## Demo accounts (after `python -m app.seed`)
 
 All use password `demo1234`:
