@@ -5,6 +5,7 @@ individual model modules, when you need the full metadata."""
 from app.accounts import models as _accounts_models  # noqa: F401
 from app.audit import models as _audit_models  # noqa: F401
 from app.compliance import models as _compliance_models  # noqa: F401
+from app.drone_surveys import models as _drone_survey_models  # noqa: F401
 from app.ingestion import models as _ingestion_models  # noqa: F401
 from app.safety import models as _safety_models  # noqa: F401
 from app.scans import models as _scans_models  # noqa: F401
